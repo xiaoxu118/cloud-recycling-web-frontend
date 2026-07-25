@@ -13,13 +13,17 @@ import {
   ResponsiveContainer, ComposedChart, LineChart, Line, BarChart, Bar,
   PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from "recharts";
+import { useLocation, useNavigate } from "react-router-dom";
 import { callCloud } from "../api/cloud";
 import type {
   Category as CloudCategory,
+  CategoryGroup as CloudCategoryGroup,
   Order as CloudOrder,
   OrderListResult,
   OrderStatus as CloudOrderStatus,
-  RecycleSettings,
+  StaffRecord,
+  SystemSetting,
+  UserRecord,
 } from "../types";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -28,7 +32,7 @@ type OrderStatus = "待接单" | "已接单" | "回收中" | "已完成" | "已�
 type StaffStatus = "online" | "resting" | "resigned";
 
 interface Staff {
-  id: string; name: string; phone: string;
+  id: string; name: string; phone: string; docId?: string; openid?: string;
   status: StaffStatus; joinDate: string; area: string; store: string;
 }
 interface RecycleItem {
@@ -127,44 +131,60 @@ const priceFromReference = (value?: string) => {
   return match ? Number(match[0]).toFixed(2) : "—";
 };
 
-const categoriesToGroups = (categories: CloudCategory[]): RecycleGroup[] => [{
-  id: "cloud-categories",
-  name: "回收品类",
-  desc: "小程序当前展示的全部可回收品类",
-  enabled: categories.some((item) => item.enabled),
-  allowFieldEstimate: categories.some((item) => !/\d/.test(item.priceRef || "")),
-  items: categories
+const categoryToItem = (item: CloudCategory): RecycleItem => {
+  const price = priceFromReference(item.priceRef);
+  return {
+    id: item._id || item.name,
+    categoryId: item._id,
+    name: item.name,
+    unit: item.unit,
+    price,
+    stationPrice: "—",
+    priceRef: item.priceRef,
+    sortOrder: item.sortOrder,
+    fieldEstimate: price === "—",
+    enabled: item.enabled,
+  };
+};
+
+const categoriesToGroups = (categories: CloudCategory[], savedGroups: CloudCategoryGroup[] = []): RecycleGroup[] => {
+  const groups = savedGroups
     .slice()
     .sort((a, b) => a.sortOrder - b.sortOrder)
-    .map((item) => {
-      const price = priceFromReference(item.priceRef);
-      return {
-        id: item._id || item.name,
-        categoryId: item._id,
-        name: item.name,
-        unit: item.unit,
-        price,
-        stationPrice: "—",
-        priceRef: item.priceRef,
-        sortOrder: item.sortOrder,
-        fieldEstimate: price === "—",
-        enabled: item.enabled,
-      };
-    }),
-}];
-
-const staffFromOrders = (orders: Order[]): Staff[] => {
-  const names = Array.from(new Set(orders.flatMap((order) => order.recyclers).filter(Boolean)));
-  return names.map((name, index) => ({
-    id: `R${String(index + 1).padStart(3, "0")}`,
-    name,
-    phone: orders.find((order) => order.recyclers.includes(name))?.recyclerPhone || "",
-    status: "online",
-    joinDate: "—",
-    area: "—",
-    store: "未配置门店",
-  }));
+    .map((group) => ({
+      id: group._id || group.name,
+      name: group.name,
+      desc: group.description || "暂无分组说明",
+      enabled: group.enabled,
+      allowFieldEstimate: group.allowFieldEstimate,
+      items: categories.filter((item) => item.groupId === group._id).map(categoryToItem),
+    }));
+  const assignedIds = new Set(savedGroups.map((group) => group._id).filter(Boolean));
+  const ungrouped = categories.filter((item) => !item.groupId || !assignedIds.has(item.groupId));
+  if (ungrouped.length || groups.length === 0) {
+    groups.unshift({
+      id: "cloud-categories",
+      name: "回收品类",
+      desc: "尚未分组的可回收品类",
+      enabled: ungrouped.some((item) => item.enabled),
+      allowFieldEstimate: ungrouped.some((item) => !/\d/.test(item.priceRef || "")),
+      items: ungrouped.map(categoryToItem),
+    });
+  }
+  return groups;
 };
+
+const staffFromCloud = (staff: StaffRecord[]): Staff[] => staff.map((item) => ({
+  id: item.employeeNo,
+  docId: item._id,
+  openid: item.openid,
+  name: item.name,
+  phone: item.phone,
+  status: item.status,
+  joinDate: item.joinDate || "—",
+  area: item.area || "—",
+  store: item.store || "—",
+}));
 
 // ─── Initial Data ─────────────────────────────────────────────────────────────
 const INIT_STAFF: Staff[] = [
@@ -177,8 +197,8 @@ const INIT_STAFF: Staff[] = [
 ];
 
 // Column widths shared across all category group tables for alignment
-const CAT_COL_WIDTHS = [190, 60, 96, 96, 80, 100, 84, 100];
-const CAT_COL_HEADERS = ["品类名称","单位","收购单价","打包站价","差价","差价/收购价","状态","操作"];
+const CAT_COL_WIDTHS = [190, 60, 96, 96, 80, 100, 84];
+const CAT_COL_HEADERS = ["品类名称","单位","收购单价","打包站价","差价","差价/收购价","状态"];
 
 const INIT_GROUPS: RecycleGroup[] = [
   {
@@ -409,6 +429,21 @@ function RecyclerSelect({ value,onChange,staff }:{ value:string[];onChange:(v:st
       </div>}
     </div>
   );
+}
+
+function AssignRecyclerModal({order,staff,onAssign,onClose}:{order:Order;staff:Staff[];onAssign:(staff:Staff)=>Promise<void>;onClose:()=>void}) {
+  const [savingId,setSavingId]=useState("");
+  const onlineStaff=staff.filter((item)=>item.status==="online");
+  const assign=async(item:Staff)=>{
+    setSavingId(item.id);
+    try{
+      await onAssign(item);
+      onClose();
+    }finally{
+      setSavingId("");
+    }
+  };
+  return <div className="fixed inset-0 z-50 flex items-center justify-center"><button className="absolute inset-0 bg-black/40" onClick={onClose}/><div className="relative w-full max-w-md mx-4 bg-white rounded-2xl shadow-2xl overflow-hidden"><div className="flex items-center justify-between px-6 py-4 border-b border-gray-100"><div><h2 className="font-semibold text-gray-900">分配回收人员</h2><p className="text-xs text-gray-400 mt-1">订单 {order.id} · 仅显示在线工作人员</p></div><button onClick={onClose}><X size={18} className="text-gray-400"/></button></div><div className="p-4 max-h-[55vh] overflow-y-auto space-y-2">{onlineStaff.map((item)=><button key={item.id} disabled={Boolean(savingId)} onClick={()=>void assign(item)} className="w-full flex items-center gap-3 p-3 rounded-xl border border-gray-100 text-left hover:border-green-300 hover:bg-green-50/50 transition-all disabled:opacity-50"><div className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-semibold" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}>{item.name[0]}</div><div className="flex-1 min-w-0"><p className="text-sm font-medium text-gray-800">{item.name}</p><p className="text-xs text-gray-400 mt-0.5">{item.store} · {item.area}</p></div><span className="text-xs font-mono text-gray-500">{item.phone}</span>{savingId===item.id?<Loader size={15} className="animate-spin text-green-600"/>:<ChevronRight size={15} className="text-gray-300"/>}</button>)}{onlineStaff.length===0&&<div className="py-10 text-center"><Users size={30} className="mx-auto text-gray-200 mb-2"/><p className="text-sm text-gray-400">暂无在线工作人员</p></div>}</div><div className="px-6 py-3 border-t border-gray-100 bg-gray-50 text-right"><button onClick={onClose} className="px-4 py-2 text-sm text-gray-500">取消</button></div></div></div>;
 }
 
 // ─── Image Preview Modal ──────────────────────────────────────────────────────
@@ -681,13 +716,13 @@ function ColVisibilityMenu({ cols,hidden,onToggle }:{ cols:ColDef[];hidden:Set<s
 }
 
 // ─── Orders Page ──────────────────────────────────────────────────────────────
-function OrdersPage({ staff,groups,orders,onSaveOrder,onUnsupported }:{ staff:Staff[];groups:RecycleGroup[];orders:Order[];onSaveOrder:(order:Order)=>Promise<void>;onUnsupported:(feature:string)=>void }) {
+function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsupported,onViewOrder }:{ staff:Staff[];groups:RecycleGroup[];orders:Order[];onSaveOrder:(order:Order)=>Promise<void>;onAssignRecycler:(order:Order,staff:Staff)=>Promise<void>;onUnsupported:(feature:string)=>void;onViewOrder:(id:string)=>void }) {
   const [cols,setCols]=useState<ColDef[]>(INIT_COLS);
   const [hiddenCols,setHiddenCols]=useState<Set<string>>(new Set());
   const [search,setSearch]=useState("");
   const [filterStatus,setFilterStatus]=useState<OrderStatus|"全部">("全部");
-  const [detailOrder,setDetailOrder]=useState<Order|null>(null);
   const [editOrder,setEditOrder]=useState<Order|null>(null);
+  const [assigningOrder,setAssigningOrder]=useState<Order|null>(null);
   const [showNew,setShowNew]=useState(false);
   const [previewInfo,setPreviewInfo]=useState<{images:string[];idx:number}|null>(null);
   const [showAutoModal,setShowAutoModal]=useState(false);
@@ -695,9 +730,6 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onUnsupported }:{ staff:St
   const [autoMinutes,setAutoMinutes]=useState(30);
   const [dateFilterType,setDateFilterType]=useState<"appointment"|"completed">("appointment");
   const [dateFrom,setDateFrom]=useState(""); const [dateTo,setDateTo]=useState("");
-  const [visibleContacts,setVisibleContacts]=useState<Set<string>>(new Set());
-
-  const toggleContact=(id:string)=>setVisibleContacts(prev=>{const s=new Set(prev);s.has(id)?s.delete(id):s.add(id);return s;});
   const toggleHiddenCol=(id:string)=>setHiddenCols(prev=>{const s=new Set(prev);s.has(id)?s.delete(id):s.add(id);return s;});
 
   // Column resize
@@ -741,15 +773,13 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onUnsupported }:{ staff:St
       case "id": return <span className="font-mono text-xs text-gray-600 tracking-wide">{order.id}</span>;
       case "status": return <StatusBadge status={order.status}/>;
       case "contact":{
-        const show=visibleContacts.has(order.id);
         return(
           <div className="flex items-center gap-1.5">
             <div className="w-7 h-7 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0"><span className="text-xs font-semibold text-green-700">{order.userName[0]}</span></div>
             <div className="flex-1 min-w-0">
-              <p className="text-sm font-medium text-gray-800 leading-tight">{show?order.userName:maskName(order.userName)}</p>
-              <p className="text-xs font-mono text-gray-500 leading-tight">{show?order.phone:maskPhone(order.phone)}</p>
+              <p className="text-sm font-medium text-gray-800 leading-tight">{order.userName}</p>
+              <p className="text-xs font-mono text-gray-500 leading-tight">{order.phone||"—"}</p>
             </div>
-            <button onClick={()=>toggleContact(order.id)} className="text-gray-300 hover:text-green-600 transition-colors flex-shrink-0">{show?<EyeOff size={12}/>:<Eye size={12}/>}</button>
           </div>
         );
       }
@@ -769,11 +799,13 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onUnsupported }:{ staff:St
           {order.images.length>3&&<div className="w-8 h-8 rounded-lg bg-gray-100 border-2 border-white flex items-center justify-center flex-shrink-0"><span className="text-[10px] font-bold text-gray-500">+{order.images.length-3}</span></div>}
         </div>
       );
-      case "recyclers": return <RecyclerPills recyclers={order.recyclers} staff={staff}/>;
+      case "recyclers": return order.recyclers.length
+        ? <RecyclerPills recyclers={order.recyclers} staff={staff}/>
+        : <button type="button" onClick={()=>setAssigningOrder(order)} className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-green-200 bg-green-50 text-xs font-medium text-green-700 hover:bg-green-100"><User size={11}/>分配人员</button>;
       case "lastModified": return <span className="text-xs text-gray-400 font-mono">{order.lastModified}</span>;
       case "actions": return(
         <RowActions layout="stack">
-          <RowActionButton tone="green" icon={Eye} onClick={()=>setDetailOrder(order)}>详情</RowActionButton>
+          <RowActionButton tone="green" icon={Eye} onClick={()=>order.docId&&onViewOrder(order.docId)}>详情</RowActionButton>
           <RowActionButton tone="blue" icon={Edit2} onClick={()=>setEditOrder(order)}>修改</RowActionButton>
         </RowActions>
       );
@@ -862,9 +894,9 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onUnsupported }:{ staff:St
             </thead>
             <tbody>
               {filtered.map((order,i)=>(
-                <tr key={order.id} className={`border-b border-gray-50 hover:bg-green-50/20 transition-colors ${i%2===1?"bg-gray-50/20":""}`}>
-                  {visibleCols.map((col,ci)=>(
-                    <td key={col.id} className="px-4 py-3" style={{width:col.width,maxWidth:col.width,overflow:"hidden"}}>
+                <tr key={order.id} tabIndex={0} onClick={()=>order.docId&&onViewOrder(order.docId)} onKeyDown={event=>{if((event.key==="Enter"||event.key===" ")&&order.docId){event.preventDefault();onViewOrder(order.docId);}}} className={`border-b border-gray-50 hover:bg-green-50/40 transition-colors cursor-pointer focus:outline-none focus:bg-green-50/60 ${i%2===1?"bg-gray-50/20":""}`}>
+                  {visibleCols.map((col)=>(
+                    <td key={col.id} onClick={col.id==="actions"||col.id==="images"||col.id==="recyclers"?event=>event.stopPropagation():undefined} className="px-4 py-3" style={{width:col.width,maxWidth:col.width,overflow:"hidden"}}>
                       {renderCell(col,order)}
                     </td>
                   ))}
@@ -880,8 +912,8 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onUnsupported }:{ staff:St
         </div>
       </div>
 
-      {detailOrder&&<OrderDetailPanel order={detailOrder} staff={staff} onClose={()=>setDetailOrder(null)}/>}
       {editOrder&&<OrderEditModal order={editOrder} staff={staff} onSave={o=>{void onSaveOrder(o).then(()=>setEditOrder(null)).catch(()=>undefined);}} onClose={()=>setEditOrder(null)}/>} 
+      {assigningOrder&&<AssignRecyclerModal order={assigningOrder} staff={staff} onAssign={async(person)=>onAssignRecycler(assigningOrder,person)} onClose={()=>setAssigningOrder(null)}/>}
       {showNew&&<NewOrderModal onSave={()=>{setShowNew(false);onUnsupported("后台新建订单");}} onClose={()=>setShowNew(false)} staff={staff} groups={groups} orders={orders}/>} 
       {previewInfo&&<ImagePreviewModal images={previewInfo.images} initialIndex={previewInfo.idx} onClose={()=>setPreviewInfo(null)}/>} 
       {showAutoModal&&<AutoAcceptModal enabled={autoEnabled} minutes={autoMinutes} onSave={(en,min)=>{setAutoEnabled(false);setAutoMinutes(min);setShowAutoModal(false);onUnsupported(en?"超时自动接单":"超时自动接单配置");}} onClose={()=>setShowAutoModal(false)}/>} 
@@ -890,25 +922,25 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onUnsupported }:{ staff:St
 }
 
 // ─── Staff Page ───────────────────────────────────────────────────────────────
-function StaffPage({ staff,onUnsupported }:{ staff:Staff[];onUnsupported:(feature:string)=>void }) {
-  const [showPhone,setShowPhone]=useState<Set<string>>(new Set());
-  const togglePhone=(id:string)=>setShowPhone(prev=>{const s=new Set(prev);s.has(id)?s.delete(id):s.add(id);return s;});
-  const cycleStatus=()=>onUnsupported("回收人员状态管理");
+function StaffPage({ staff,users,onSaveStaff }:{ staff:Staff[];users:UserRecord[];onSaveStaff:(staff:Staff)=>Promise<void> }) {
+  const [tab,setTab]=useState<"users"|"staff">("users");
+  const [editing,setEditing]=useState<Staff|null|undefined>(undefined);
   const counts={online:staff.filter(s=>s.status==="online").length,resting:staff.filter(s=>s.status==="resting").length,resigned:staff.filter(s=>s.status==="resigned").length};
   return(
     <div className="p-6 space-y-5">
       <div className="flex items-center justify-between">
-        <div><h1 className="text-xl font-semibold text-gray-900">人员管理</h1><p className="text-sm text-gray-400 mt-0.5">共 {staff.length} 名回收人员</p></div>
-        <button onClick={()=>onUnsupported("添加回收人员")} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white hover:opacity-90 transition-all" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}><Plus size={14}/>添加人员</button>
+        <div><h1 className="text-xl font-semibold text-gray-900">人员管理</h1><p className="text-sm text-gray-400 mt-0.5">用户和工作人员均来自云数据库</p></div>
+        {tab==="staff"&&<button onClick={()=>setEditing(null)} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white hover:opacity-90 transition-all" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}><Plus size={14}/>添加工作人员</button>}
       </div>
-      <div className="grid grid-cols-3 gap-3">
+      <div className="flex gap-2 border-b border-gray-200"><button onClick={()=>setTab("users")} className={`px-4 py-2 text-sm font-medium border-b-2 ${tab==="users"?"border-green-600 text-green-700":"border-transparent text-gray-400"}`}>用户（{users.length}）</button><button onClick={()=>setTab("staff")} className={`px-4 py-2 text-sm font-medium border-b-2 ${tab==="staff"?"border-green-600 text-green-700":"border-transparent text-gray-400"}`}>工作人员（{staff.length}）</button></div>
+      {tab==="staff"&&<div className="grid grid-cols-3 gap-3">
         {[{label:"在线（可接单）",val:counts.online,color:"text-green-600"},{label:"休息（暂停接单）",val:counts.resting,color:"text-amber-600"},{label:"离职",val:counts.resigned,color:"text-gray-400"}].map(item=>(
           <div key={item.label} className="bg-white rounded-xl p-4 border border-transparent">
             <p className={`text-2xl font-bold font-mono ${item.color}`}>{item.val}</p><p className="text-xs text-gray-400 mt-1">{item.label}</p>
           </div>
         ))}
-      </div>
-      <div className="bg-white rounded-xl overflow-hidden border border-gray-100">
+      </div>}
+      {tab==="users"?<div className="bg-white rounded-xl overflow-hidden border border-gray-100"><table className="w-full"><thead><tr className="bg-gray-50 border-b border-gray-100">{["用户","联系电话","OpenID","订单数","地址数","最近活跃"].map(h=><th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-500">{h}</th>)}</tr></thead><tbody>{users.map(user=><tr key={user._id} className="border-b border-gray-50"><td className="px-4 py-3"><div className="flex items-center gap-2">{user.avatarUrl?<img src={user.avatarUrl} className="w-8 h-8 rounded-full"/>:<div className="w-8 h-8 rounded-full bg-green-100 text-green-700 flex items-center justify-center"><User size={14}/></div>}<span className="text-sm font-medium">{user.nickName||"微信用户"}</span></div></td><td className="px-4 py-3 text-xs font-mono">{user.phone||"—"}</td><td className="px-4 py-3 text-xs font-mono text-gray-400 max-w-48 truncate">{user.openid}</td><td className="px-4 py-3 text-sm">{user.orderCount}</td><td className="px-4 py-3 text-sm">{user.addressCount}</td><td className="px-4 py-3 text-xs text-gray-500">{formatCloudTime(user.lastLoginTime||user.updateTime)}</td></tr>)}{users.length===0&&<tr><td colSpan={6} className="px-6 py-16 text-center text-sm text-gray-400">暂无已同步的小程序用户</td></tr>}</tbody></table></div>:<div className="bg-white rounded-xl overflow-hidden border border-gray-100">
         <table className="w-full">
           <thead>
             <tr className="bg-gray-50 border-b border-gray-100">
@@ -930,40 +962,72 @@ function StaffPage({ staff,onUnsupported }:{ staff:Staff[];onUnsupported:(featur
                   </div>
                 </td>
                 <td className="px-4 py-3 border-r border-gray-50">
-                  <div className="flex items-center gap-1.5">
-                    <span className="font-mono text-xs text-gray-700">{showPhone.has(s.id)?s.phone:maskPhone(s.phone)}</span>
-                    <button onClick={()=>togglePhone(s.id)} className="text-gray-400 hover:text-green-600 transition-colors">{showPhone.has(s.id)?<EyeOff size={12}/>:<Eye size={12}/>}</button>
-                  </div>
+                  <span className="font-mono text-xs text-gray-700">{s.phone||"—"}</span>
                 </td>
                 <td className="px-4 py-3 border-r border-gray-50">
                   <div className="flex items-center gap-1"><Store size={12} className="text-gray-400 flex-shrink-0"/><span className="text-xs text-gray-600">{s.store}</span></div>
                 </td>
                 <td className="px-4 py-3 border-r border-gray-50"><span className="text-sm text-gray-600">{s.area}</span></td>
                 <td className="px-4 py-3 border-r border-gray-50"><span className="text-xs font-mono text-gray-500">{s.joinDate}</span></td>
-                <td className="px-4 py-3 border-r border-gray-50"><button onClick={cycleStatus} title="点击切换状态"><StaffBadge status={s.status}/></button></td>
+                <td className="px-4 py-3 border-r border-gray-50"><button onClick={()=>void onSaveStaff({...s,status:STAFF_CFG[s.status].next})} title="点击切换状态"><StaffBadge status={s.status}/></button></td>
                 <td className="px-4 py-3 border-r border-gray-50">
-                  <RowActionButton tone="gray" icon={Lock} onClick={()=>onUnsupported("人员权限配置")}>权限配置</RowActionButton>
+                  <span className="text-xs text-gray-400">工作人员</span>
                 </td>
                 <td className="px-4 py-3">
                   <RowActions layout="stack">
-                    <RowActionButton tone="blue" icon={Edit2} onClick={()=>onUnsupported("编辑回收人员")}>编辑</RowActionButton>
-                    <RowActionButton tone="red" icon={Trash2} onClick={()=>onUnsupported("删除回收人员")}>删除</RowActionButton>
+                    <RowActionButton tone="blue" icon={Edit2} onClick={()=>setEditing(s)}>编辑</RowActionButton>
+                    <RowActionButton tone="red" icon={Trash2} onClick={()=>void onSaveStaff({...s,status:"resigned"})}>停用</RowActionButton>
                   </RowActions>
                 </td>
               </tr>
             ))}
-            {staff.length===0&&<tr><td colSpan={9} className="px-6 py-16 text-center"><Users size={32} className="mx-auto text-gray-200 mb-3"/><p className="text-sm text-gray-400">暂无回收人员数据</p><p className="text-xs text-gray-300 mt-1">人员接口接入后将在这里显示真实人员</p></td></tr>}
+            {staff.length===0&&<tr><td colSpan={9} className="px-6 py-16 text-center"><Users size={32} className="mx-auto text-gray-200 mb-3"/><p className="text-sm text-gray-400">暂无工作人员数据</p></td></tr>}
           </tbody>
         </table>
-      </div>
+      </div>}
+      {editing!==undefined&&<StaffEditor initial={editing} onClose={()=>setEditing(undefined)} onSave={async(value)=>{await onSaveStaff(value);setEditing(undefined);}}/>}
     </div>
   );
 }
 
-// ─── Add Item Modal ───────────────────────────────────────────────────────────
-function AddItemModal({ groups,onSave,onClose }:{ groups:RecycleGroup[];onSave:(gid:string,item:RecycleItem)=>void;onClose:()=>void }) {
-  const [form,setForm]=useState({ name:"",unit:"kg",price:"",stationPrice:"",groupId:groups[0]?.id||"",fieldEstimate:false,enabled:true });
+function StaffEditor({initial,onClose,onSave}:{initial:Staff|null;onClose:()=>void;onSave:(staff:Staff)=>Promise<void>}){
+  const [form,setForm]=useState<Staff>(initial||{id:"",name:"",phone:"",status:"resting",joinDate:"",area:"",store:""});
+  const [saving,setSaving]=useState(false);
+  const save=async()=>{if(!form.name.trim()||!form.phone.trim())return;setSaving(true);try{await onSave(form);}finally{setSaving(false);}};
+  return <div className="fixed inset-0 z-50 flex items-center justify-center"><button className="absolute inset-0 bg-black/40" onClick={onClose}/><div className="relative bg-white rounded-2xl shadow-xl w-full max-w-lg p-6 space-y-4"><div className="flex justify-between"><h2 className="font-semibold">{initial?"编辑工作人员":"添加工作人员"}</h2><button onClick={onClose}><X size={18}/></button></div><div className="grid grid-cols-2 gap-3">{[{k:"name",l:"姓名 *"},{k:"phone",l:"联系电话 *"},{k:"id",l:"工号"},{k:"openid",l:"微信 OpenID"},{k:"area",l:"服务区域"},{k:"store",l:"所属门店"},{k:"joinDate",l:"入职日期"}].map(item=><label key={item.k} className={item.k==="openid"?"col-span-2":""}><span className="text-xs text-gray-500">{item.l}</span><input value={String(form[item.k as keyof Staff]||"")} onChange={e=>setForm({...form,[item.k]:e.target.value})} className="mt-1 w-full px-3 py-2 border rounded-lg text-sm"/></label>)}</div><label><span className="text-xs text-gray-500">状态</span><select value={form.status} onChange={e=>setForm({...form,status:e.target.value as StaffStatus})} className="mt-1 w-full px-3 py-2 border rounded-lg text-sm"><option value="online">在线</option><option value="resting">休息</option><option value="resigned">离职</option></select></label><div className="flex justify-end gap-2"><button onClick={onClose} className="px-4 py-2 text-sm">取消</button><button disabled={saving||!form.name.trim()||!form.phone.trim()} onClick={()=>void save()} className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm disabled:opacity-40">{saving?"保存中…":"保存"}</button></div></div></div>;
+}
+
+function CategoryGroupModal({index,onSave,onClose}:{index:number;onSave:(group:CloudCategoryGroup)=>Promise<void>;onClose:()=>void}) {
+  const [form,setForm]=useState<CloudCategoryGroup>({name:"",description:"",sortOrder:index,enabled:true,allowFieldEstimate:false});
+  const [saving,setSaving]=useState(false);
+  const save=async()=>{
+    if(!form.name.trim())return;
+    setSaving(true);
+    try{
+      await onSave({...form,name:form.name.trim(),description:form.description?.trim()});
+      onClose();
+    }finally{
+      setSaving(false);
+    }
+  };
+  const inputClass="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200 text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50";
+  return <div className="fixed inset-0 z-50 flex items-center justify-center"><button className="absolute inset-0 bg-black/40" onClick={onClose}/><div className="relative bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4"><div className="flex items-center justify-between"><div><h2 className="font-semibold text-gray-900">添加品类分组</h2><p className="text-xs text-gray-400 mt-1">分组创建后可以在添加或编辑品类时选择</p></div><button onClick={onClose}><X size={18}/></button></div><label className="block"><span className="text-xs text-gray-500">分组名称 *</span><input autoFocus value={form.name} onChange={event=>setForm({...form,name:event.target.value})} placeholder="例如：纸制品" className={inputClass}/></label><label className="block"><span className="text-xs text-gray-500">分组说明</span><textarea rows={3} value={form.description||""} onChange={event=>setForm({...form,description:event.target.value})} placeholder="简单描述该分组包含的品类" className={`${inputClass} resize-none`}/></label><div className="flex items-center justify-between py-2 px-3 bg-gray-50 rounded-xl"><div><p className="text-sm font-medium text-gray-700">允许现场估价</p><p className="text-xs text-gray-400">该组品类可不设置固定单价</p></div><button onClick={()=>setForm({...form,allowFieldEstimate:!form.allowFieldEstimate})}>{form.allowFieldEstimate?<ToggleRight size={26} className="text-green-500"/>:<ToggleLeft size={26} className="text-gray-300"/>}</button></div><div className="flex justify-end gap-2"><button onClick={onClose} className="px-4 py-2 text-sm text-gray-500">取消</button><button disabled={saving||!form.name.trim()} onClick={()=>void save()} className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm disabled:opacity-40">{saving?"保存中…":"创建分组"}</button></div></div></div>;
+}
+
+// ─── Category Editor Modal ────────────────────────────────────────────────────
+function CategoryEditorModal({ groups,initial,onSave,onClose }:{ groups:RecycleGroup[];initial?:RecycleItem;onSave:(gid:string,item:RecycleItem)=>Promise<void>;onClose:()=>void }) {
+  const initialGroupId=groups.find((group)=>group.items.some((item)=>item.id===initial?.id))?.id||groups[0]?.id||"";
+  const [form,setForm]=useState({
+    name:initial?.name||"",
+    unit:initial?.unit||"kg",
+    price:initial?.price==="—"?"":initial?.price||"",
+    stationPrice:initial?.stationPrice==="—"?"":initial?.stationPrice||"",
+    groupId:initialGroupId,
+    fieldEstimate:initial?.fieldEstimate||false,
+    enabled:initial?.enabled??true,
+  });
   const [err,setErr]=useState<Record<string,string>>({});
+  const [saving,setSaving]=useState(false);
   const set=(k:string,v:string|boolean)=>setForm(f=>({...f,[k]:v}));
   const selGroup=groups.find(g=>g.id===form.groupId);
   function validate(){
@@ -972,14 +1036,22 @@ function AddItemModal({ groups,onSave,onClose }:{ groups:RecycleGroup[];onSave:(
     if(!form.fieldEstimate&&!form.price.trim()) e.price="请填写收购单价";
     setErr(e); return Object.keys(e).length===0;
   }
-  function handleSave(){
+  async function handleSave(){
     if(!validate()) return;
     const newItem:RecycleItem={
-      id:`${form.groupId}-${Date.now()}`,name:form.name,unit:form.unit,
+      ...initial,
+      id:initial?.id||`${form.groupId}-${Date.now()}`,name:form.name.trim(),unit:form.unit,
       price:form.fieldEstimate?"—":form.price, stationPrice:form.fieldEstimate?"—":form.stationPrice||"—",
+      priceRef:form.fieldEstimate?"现场估价":`${form.price}元/${form.unit}起`,
       fieldEstimate:form.fieldEstimate, enabled:form.enabled,
     };
-    onSave(form.groupId,newItem);
+    setSaving(true);
+    try{
+      await onSave(form.groupId,newItem);
+      onClose();
+    }finally{
+      setSaving(false);
+    }
   }
   const inp="w-full px-3 py-2 rounded-lg border text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50 transition-all";
   return(
@@ -987,7 +1059,10 @@ function AddItemModal({ groups,onSave,onClose }:{ groups:RecycleGroup[];onSave:(
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm"/>
       <div className="relative z-10 w-full max-w-md mx-4 bg-white rounded-2xl shadow-2xl" onClick={e=>e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
-          <h2 className="font-semibold text-gray-900">添加品类</h2>
+          <div>
+            <h2 className="font-semibold text-gray-900">{initial?"品类详情与编辑":"添加品类"}</h2>
+            {initial&&<p className="text-xs text-gray-400 mt-0.5">查看品类信息，修改后点击保存</p>}
+          </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={20}/></button>
         </div>
         <div className="px-6 py-5 space-y-4">
@@ -1025,10 +1100,14 @@ function AddItemModal({ groups,onSave,onClose }:{ groups:RecycleGroup[];onSave:(
               </div>
             </div>
           )}
+          <div className="flex items-center justify-between py-2 px-3 bg-gray-50 border border-gray-100 rounded-xl">
+            <div><p className="text-sm font-medium text-gray-700">品类上架</p><p className="text-xs text-gray-400 mt-0.5">下架后小程序不再展示，历史订单不受影响</p></div>
+            <button type="button" onClick={()=>set("enabled",!form.enabled)}>{form.enabled?<ToggleRight size={26} className="text-green-500"/>:<ToggleLeft size={26} className="text-gray-300"/>}</button>
+          </div>
         </div>
         <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-3">
           <button onClick={onClose} className="px-4 py-2 rounded-lg border border-gray-200 text-sm text-gray-600 hover:bg-gray-50">取消</button>
-          <button onClick={handleSave} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium text-white hover:opacity-90" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}><Plus size={14}/>添加品类</button>
+          <button disabled={saving} onClick={()=>void handleSave()} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium text-white hover:opacity-90 disabled:opacity-50" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}>{initial?<Save size={14}/>:<Plus size={14}/>} {saving?"保存中…":initial?"保存修改":"添加品类"}</button>
         </div>
       </div>
     </div>
@@ -1188,22 +1267,24 @@ function ImportModal({groups,onImport,onClose}:{groups:RecycleGroup[];onImport:(
 }
 
 // ─── Recycle Cats Page ────────────────────────────────────────────────────────
-function RecycleCatsPage({ groups,onSaveCategory,onUnsupported }:{ groups:RecycleGroup[];onSaveCategory:(item:RecycleItem)=>Promise<void>;onUnsupported:(feature:string)=>void }) {
+function RecycleCatsPage({ groups,onSaveCategory,onSaveGroup,onUnsupported }:{ groups:RecycleGroup[];onSaveCategory:(item:RecycleItem,gid:string)=>Promise<void>;onSaveGroup:(group:CloudCategoryGroup)=>Promise<void>;onUnsupported:(feature:string)=>void }) {
   const [expanded,setExpanded]=useState<Set<string>>(new Set(groups.map((group)=>group.id)));
   const [search,setSearch]=useState("");
   const [showAddItem,setShowAddItem]=useState(false);
   const [showImport,setShowImport]=useState(false);
+  const [showAddGroup,setShowAddGroup]=useState(false);
+  const [editingItem,setEditingItem]=useState<RecycleItem>();
 
   useEffect(()=>{setExpanded(prev=>new Set([...prev,...groups.map((group)=>group.id)]));},[groups]);
   const toggleGroup=()=>onUnsupported("品类分组启停");
   const toggleItem=(gid:string,iid:string)=>{
     const item=groups.find((group)=>group.id===gid)?.items.find((entry)=>entry.id===iid);
-    if(item) void onSaveCategory({...item,enabled:!item.enabled});
+    if(item) void onSaveCategory({...item,enabled:!item.enabled},gid);
   };
   const toggleExpand=(id:string)=>setExpanded(prev=>{const s=new Set(prev);s.has(id)?s.delete(id):s.add(id);return s;});
 
-  function addItem(_gid:string,item:RecycleItem){ void onSaveCategory(item).then(()=>setShowAddItem(false)); }
-  function addItems(_gid:string,items:RecycleItem[]){ void Promise.all(items.map(onSaveCategory)).then(()=>setShowImport(false)); }
+  async function saveItem(gid:string,item:RecycleItem){ await onSaveCategory(item,gid); }
+  function addItems(gid:string,items:RecycleItem[]){ void Promise.all(items.map((item)=>onSaveCategory(item,gid))).then(()=>setShowImport(false)); }
 
   const filteredGroups=groups.map(g=>{
     const q=search.toLowerCase();
@@ -1219,7 +1300,7 @@ function RecycleCatsPage({ groups,onSaveCategory,onUnsupported }:{ groups:Recycl
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div><h1 className="text-xl font-semibold text-gray-900">品类管理</h1><p className="text-sm text-gray-400 mt-0.5">管理回收分组及具体品类单价</p></div>
         <div className="flex items-center gap-2">
-          <button onClick={()=>onUnsupported("添加品类分组")} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border border-gray-200 text-gray-600 hover:border-gray-300 transition-all"><Plus size={14}/>添加分组</button>
+          <button onClick={()=>setShowAddGroup(true)} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border border-gray-200 text-gray-600 hover:border-gray-300 transition-all"><Plus size={14}/>添加分组</button>
           <button onClick={()=>setShowImport(true)} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border border-gray-200 text-gray-600 hover:border-gray-300 transition-all"><Upload size={14}/>导入Excel</button>
           <button onClick={()=>setShowAddItem(true)} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white hover:opacity-90 transition-all" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}><Plus size={14}/>添加品类</button>
         </div>
@@ -1273,7 +1354,7 @@ function RecycleCatsPage({ groups,onSaveCategory,onUnsupported }:{ groups:Recycl
                     const sp=spread(item.price,item.stationPrice);
                     const pct=sp!==null&&parseFloat(item.price)>0?((parseFloat(sp)/parseFloat(item.price))*100).toFixed(1):null;
                     return(
-                      <tr key={item.id} className={`border-b border-gray-50 last:border-0 hover:bg-gray-50/40 transition-colors ${!item.enabled?"opacity-50":""} ${i%2===1?"bg-gray-50/20":""}`}>
+                      <tr key={item.id} tabIndex={0} onClick={()=>setEditingItem(item)} onKeyDown={event=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();setEditingItem(item);}}} className={`border-b border-gray-50 last:border-0 hover:bg-gray-50/40 transition-colors cursor-pointer focus:outline-none focus:bg-green-50/50 ${!item.enabled?"opacity-50":""} ${i%2===1?"bg-gray-50/20":""}`}>
                         <td className="px-4 py-2.5">
                           <div className="flex items-center gap-2">
                             <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${item.enabled?"bg-green-400":"bg-gray-300"}`}/>
@@ -1295,18 +1376,12 @@ function RecycleCatsPage({ groups,onSaveCategory,onUnsupported }:{ groups:Recycl
                           {pct!==null?<span className={`text-xs font-semibold font-mono px-1.5 py-0.5 rounded ${parseFloat(pct)>0?"bg-green-50 text-green-700":"bg-red-50 text-red-600"}`}>{parseFloat(pct)>0?"+":""}{pct}%</span>:<span className="text-xs text-gray-300">—</span>}
                         </td>
                         <td className="px-4 py-2.5">
-                          <button onClick={()=>toggleItem(group.id,item.id)}>
+                          <button onClick={event=>{event.stopPropagation();toggleItem(group.id,item.id);}}>
                             {item.enabled
                               ?<span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 border border-green-200">已上架</span>
                               :<span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-600 border border-red-200">已下架</span>
                             }
                           </button>
-                        </td>
-                        <td className="px-4 py-2.5">
-                          <RowActions layout="inline">
-                            <RowActionButton tone="blue" icon={Edit2} onClick={()=>onUnsupported("编辑品类详情")}>编辑</RowActionButton>
-                            <RowActionButton tone="red" icon={Trash2} onClick={()=>onUnsupported("删除品类")}>删除</RowActionButton>
-                          </RowActions>
                         </td>
                       </tr>
                     );
@@ -1317,63 +1392,35 @@ function RecycleCatsPage({ groups,onSaveCategory,onUnsupported }:{ groups:Recycl
           </div>
         ))}
       </div>
-      {showAddItem&&<AddItemModal groups={groups} onSave={addItem} onClose={()=>setShowAddItem(false)}/>}
+      {showAddItem&&<CategoryEditorModal groups={groups} onSave={saveItem} onClose={()=>setShowAddItem(false)}/>}
+      {editingItem&&<CategoryEditorModal groups={groups} initial={editingItem} onSave={saveItem} onClose={()=>setEditingItem(undefined)}/>}
+      {showAddGroup&&<CategoryGroupModal index={groups.length+1} onSave={onSaveGroup} onClose={()=>setShowAddGroup(false)}/>}
       {showImport&&<ImportModal groups={groups} onImport={addItems} onClose={()=>setShowImport(false)}/>}
     </div>
   );
 }
 
 // ─── System Page ──────────────────────────────────────────────────────────────
-function SystemPage({ settings,onSave }:{ settings:RecycleSettings;onSave:(settings:RecycleSettings)=>Promise<void> }) {
-  const [siteName,setSiteName]=useState(settings.siteName||"绿源废品回收平台");
-  const [servicePhone,setServicePhone]=useState(settings.servicePhone||"4008889999");
-  const [notifyEnabled,setNotifyEnabled]=useState(settings.notifyEnabled!==false);
-  const [autoAssign,setAutoAssign]=useState(Boolean(settings.autoAssign));
-  const [maxDistance,setMaxDistance]=useState(String(settings.maxDistanceKm||10));
-  const [saved,setSaved]=useState(false);
+function SystemPage({items,onSave,onDelete}:{items:SystemSetting[];onSave:(item:SystemSetting)=>Promise<void>;onDelete:(item:SystemSetting)=>Promise<void>}){
+  const [search,setSearch]=useState("");
+  const [editing,setEditing]=useState<SystemSetting|null|undefined>(undefined);
+  const filtered=items.filter((item)=>[item.key,item.label,item.value,item.description].some((value)=>String(value||"").toLowerCase().includes(search.toLowerCase())));
+  const typeText:Record<SystemSetting["type"],string>={text:"文本",number:"数字",boolean:"布尔",image:"图片"};
+  return <div className="p-6 space-y-5">
+    <div className="flex items-center justify-between"><div><h1 className="text-xl font-semibold text-gray-900">系统配置字典</h1><p className="text-sm text-gray-400 mt-0.5">所有 value 统一按字符串保存，小程序和管理端共用</p></div><button onClick={()=>setEditing(null)} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white bg-green-600 hover:bg-green-700"><Plus size={14}/>新增配置</button></div>
+    <div className="relative"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/><input value={search} onChange={(event)=>setSearch(event.target.value)} placeholder="搜索 Key、名称、Value 或说明…" className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm bg-white outline-none focus:border-green-400"/></div>
+    <div className="bg-white rounded-xl border border-gray-100 overflow-hidden"><table className="w-full"><thead><tr className="bg-gray-50 border-b border-gray-100">{["Key","Value","类型","名称与说明","更新时间","操作"].map((title)=><th key={title} className="text-left px-4 py-3 text-xs font-semibold text-gray-500">{title}</th>)}</tr></thead><tbody>{filtered.map((item)=><tr key={item.key} className="border-b border-gray-50 hover:bg-gray-50/50"><td className="px-4 py-3"><code className="text-xs text-green-700 bg-green-50 px-2 py-1 rounded">{item.key}</code></td><td className="px-4 py-3 max-w-xs"><div className="text-xs font-mono text-gray-700 break-all line-clamp-2">{item.value||<span className="text-gray-300">空字符串</span>}</div>{item.type==="image"&&item.imageUrl&&<img src={item.imageUrl} alt={item.label} className="mt-2 w-16 h-10 object-cover rounded border"/>}</td><td className="px-4 py-3"><span className="text-xs px-2 py-1 rounded bg-gray-100 text-gray-600">{typeText[item.type]}</span></td><td className="px-4 py-3"><p className="text-sm font-medium text-gray-700">{item.label||item.key}</p><p className="text-xs text-gray-400 mt-1">{item.description||"—"}</p></td><td className="px-4 py-3 text-xs text-gray-400 font-mono">{formatCloudTime(item.updateTime)}</td><td className="px-4 py-3"><RowActions layout="inline"><RowActionButton tone="blue" icon={Edit2} onClick={()=>setEditing(item)}>编辑</RowActionButton><RowActionButton tone="red" icon={Trash2} onClick={()=>void onDelete(item)}>{item._id?.startsWith("virtual:")?"移除默认":"删除"}</RowActionButton></RowActions></td></tr>)}{filtered.length===0&&<tr><td colSpan={6} className="px-6 py-16 text-center text-sm text-gray-400">暂无匹配的配置项</td></tr>}</tbody></table><div className="px-4 py-3 border-t text-xs text-gray-400">共 {filtered.length} / {items.length} 项配置</div></div>
+    {editing!==undefined&&<SystemSettingEditor initial={editing} onClose={()=>setEditing(undefined)} onSave={async(item)=>{await onSave(item);setEditing(undefined);}}/>}
+  </div>;
+}
+
+function SystemSettingEditor({initial,onClose,onSave}:{initial:SystemSetting|null;onClose:()=>void;onSave:(item:SystemSetting)=>Promise<void>}){
+  const [form,setForm]=useState<SystemSetting>(initial?{...initial}:{key:"",value:"",type:"text",label:"",description:""});
   const [saving,setSaving]=useState(false);
-  useEffect(()=>{
-    setSiteName(settings.siteName||"绿源废品回收平台");
-    setServicePhone(settings.servicePhone||"4008889999");
-    setNotifyEnabled(settings.notifyEnabled!==false);
-    setAutoAssign(Boolean(settings.autoAssign));
-    setMaxDistance(String(settings.maxDistanceKm||10));
-  },[settings]);
-  const save=async()=>{
-    setSaving(true);
-    try{
-      await onSave({...settings,siteName,servicePhone,notifyEnabled,autoAssign,maxDistanceKm:Number(maxDistance)});
-      setSaved(true);
-      window.setTimeout(()=>setSaved(false),2000);
-    }finally{setSaving(false);}
-  };
-  return(
-    <div className="p-6 space-y-5 max-w-2xl">
-      <div><h1 className="text-xl font-semibold text-gray-900">系统配置</h1><p className="text-sm text-gray-400 mt-0.5">管理平台基础设置</p></div>
-      <div className="bg-white rounded-xl p-6 space-y-4 border border-gray-100">
-        <div className="flex items-center gap-2 mb-2"><div className="w-8 h-8 rounded-lg bg-blue-50 flex items-center justify-center"><Database size={14} className="text-blue-600"/></div><h3 className="font-semibold text-gray-800 text-sm">基础信息</h3></div>
-        {[{label:"平台名称",val:siteName,set:setSiteName,mono:false},{label:"客服电话",val:servicePhone,set:setServicePhone,mono:true}].map(item=>(
-          <div key={item.label}><label className="block text-xs font-medium text-gray-500 mb-1.5">{item.label}</label>
-            <input value={item.val} onChange={e=>item.set(e.target.value)} className={`w-full px-3 py-2 rounded-lg border border-gray-200 text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50 transition-all ${item.mono?"font-mono":""}`}/></div>
-        ))}
-        <div><label className="block text-xs font-medium text-gray-500 mb-1.5">最大服务半径（公里）</label>
-          <div className="flex items-center gap-3"><input type="range" min={1} max={50} value={maxDistance} onChange={e=>setMaxDistance(e.target.value)} className="flex-1 accent-green-600"/>
-            <span className="text-sm font-mono font-semibold text-green-700 w-14 text-right">{maxDistance} km</span></div></div>
-      </div>
-      <div className="bg-white rounded-xl p-6 space-y-4 border border-gray-100">
-        <div className="flex items-center gap-2 mb-2"><div className="w-8 h-8 rounded-lg bg-amber-50 flex items-center justify-center"><Bell size={14} className="text-amber-600"/></div><h3 className="font-semibold text-gray-800 text-sm">通知设置</h3></div>
-        {[{label:"新订单消息通知",desc:"有新订单时向管理员发送系统通知",value:notifyEnabled,set:setNotifyEnabled},{label:"自动分配回收员",desc:"系统根据距离自动匹配最近回收员",value:autoAssign,set:setAutoAssign}].map(item=>(
-          <div key={item.label} className="flex items-center justify-between py-1">
-            <div><p className="text-sm font-medium text-gray-800">{item.label}</p><p className="text-xs text-gray-400 mt-0.5">{item.desc}</p></div>
-            <button onClick={()=>item.set(!item.value)}>{item.value?<ToggleRight size={26} className="text-green-500"/>:<ToggleLeft size={26} className="text-gray-300"/>}</button>
-          </div>
-        ))}
-      </div>
-      <button disabled={saving} onClick={()=>void save()} className="flex items-center gap-2 px-5 py-2.5 rounded-lg text-sm font-medium text-white hover:opacity-90 transition-all" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}>
-        <Save size={14}/>{saving?"正在保存…":saved?"已保存 ✓":"保存设置"}
-      </button>
-    </div>
-  );
+  const keyLocked=Boolean(initial);
+  const validKey=/^[a-z][a-z0-9_]{1,63}$/.test(form.key);
+  const submit=async()=>{if(!validKey)return;setSaving(true);try{await onSave({...form,key:form.key.trim(),label:form.label.trim(),description:form.description?.trim()});}finally{setSaving(false);}};
+  return <div className="fixed inset-0 z-50 flex items-center justify-center"><button className="absolute inset-0 bg-black/40" onClick={onClose}/><div className="relative bg-white rounded-2xl shadow-xl w-full max-w-lg p-6 space-y-4"><div className="flex justify-between"><div><h2 className="font-semibold text-gray-900">{initial?"编辑配置":"新增配置"}</h2><p className="text-xs text-gray-400 mt-1">Value 将以字符串形式保存</p></div><button onClick={onClose}><X size={18}/></button></div><label className="block"><span className="text-xs text-gray-500">Key *</span><input disabled={keyLocked} value={form.key} onChange={(event)=>setForm({...form,key:event.target.value})} placeholder="例如 service_phone" className="mt-1 w-full px-3 py-2 border rounded-lg text-sm font-mono disabled:bg-gray-100"/>{!validKey&&form.key&&<p className="text-xs text-red-500 mt-1">只能使用小写字母、数字和下划线，并以字母开头</p>}</label><div className="grid grid-cols-2 gap-3"><label><span className="text-xs text-gray-500">名称</span><input value={form.label} onChange={(event)=>setForm({...form,label:event.target.value})} className="mt-1 w-full px-3 py-2 border rounded-lg text-sm"/></label><label><span className="text-xs text-gray-500">类型</span><select value={form.type} onChange={(event)=>setForm({...form,type:event.target.value as SystemSetting["type"]})} className="mt-1 w-full px-3 py-2 border rounded-lg text-sm bg-white"><option value="text">文本</option><option value="number">数字</option><option value="boolean">布尔</option><option value="image">图片 FileID</option></select></label></div><label className="block"><span className="text-xs text-gray-500">Value</span>{form.type==="boolean"?<select value={form.value} onChange={(event)=>setForm({...form,value:event.target.value})} className="mt-1 w-full px-3 py-2 border rounded-lg text-sm bg-white"><option value="true">true</option><option value="false">false</option></select>:<textarea rows={4} value={form.value} onChange={(event)=>setForm({...form,value:event.target.value})} className="mt-1 w-full px-3 py-2 border rounded-lg text-sm font-mono resize-y" placeholder={form.type==="image"?"cloud://...":"配置值"}/>}</label><label className="block"><span className="text-xs text-gray-500">说明</span><textarea rows={2} value={form.description||""} onChange={(event)=>setForm({...form,description:event.target.value})} className="mt-1 w-full px-3 py-2 border rounded-lg text-sm resize-none"/></label><div className="flex justify-end gap-2"><button onClick={onClose} className="px-4 py-2 text-sm text-gray-500">取消</button><button disabled={saving||!validKey} onClick={()=>void submit()} className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm disabled:opacity-40">{saving?"保存中…":"保存"}</button></div></div></div>;
 }
 
 // ─── Login ────────────────────────────────────────────────────────────────────
@@ -1711,6 +1758,37 @@ function AnalyticsPage({ orders }:{ orders:Order[] }) {
 }
 
 // ─── Main Layout ──────────────────────────────────────────────────────────────
+function AdminOrderDetailPage({id,token,onBack,onError}:{id:string;token:string;onBack:()=>void;onError:(error:unknown)=>void}){
+  const [order,setOrder]=useState<CloudOrder|null>(null);
+  const [loading,setLoading]=useState(true);
+  useEffect(()=>{
+    let active=true;
+    setLoading(true);
+    callCloud<CloudOrder>("adminGetOrderDetail",{sessionToken:token,id})
+      .then((data)=>{if(active)setOrder(data);})
+      .catch(onError)
+      .finally(()=>{if(active)setLoading(false);});
+    return()=>{active=false;};
+  },[id,token,onError]);
+  if(loading)return <div className="min-h-[520px] flex items-center justify-center gap-3 text-gray-400"><Loader size={22} className="animate-spin text-green-600"/><span className="text-sm">正在读取订单详情…</span></div>;
+  if(!order)return <div className="p-6"><button onClick={onBack} className="text-sm text-green-700">← 返回订单列表</button><div className="mt-8 bg-white rounded-xl p-12 text-center text-gray-400">订单不存在或加载失败</div></div>;
+  const address=order.addressSnapshot||{};
+  const status=CLOUD_TO_FIGMA_STATUS[order.status]||"待接单";
+  return <div className="p-6 space-y-5 max-w-6xl mx-auto">
+    <div className="flex items-center justify-between"><div><button onClick={onBack} className="text-sm text-green-700 hover:text-green-900 mb-2">← 返回订单列表</button><div className="flex items-center gap-3"><h1 className="text-xl font-semibold text-gray-900">订单详情</h1><StatusBadge status={status}/></div><p className="text-xs text-gray-400 font-mono mt-1">{order.orderNo}</p></div><div className="text-right text-xs text-gray-400"><p>创建时间</p><p className="font-mono mt-1">{formatCloudTime(order.createTime)}</p></div></div>
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+      <section className="bg-white rounded-xl border border-gray-100 p-5 space-y-4"><h2 className="font-semibold text-gray-800">联系人与预约</h2><div className="grid grid-cols-2 gap-4 text-sm"><DetailField label="联系人" value={address.contactName}/><DetailField label="联系电话" value={address.phone}/><DetailField label="预约日期" value={order.appointDate}/><DetailField label="预约时段" value={order.appointSlot}/><div className="col-span-2"><DetailField label="上门地址" value={[address.region,address.detail].filter(Boolean).join(" ")}/></div></div></section>
+      <section className="bg-white rounded-xl border border-gray-100 p-5 space-y-4"><h2 className="font-semibold text-gray-800">订单信息</h2><div className="grid grid-cols-2 gap-4 text-sm"><DetailField label="提交方式" value={order.source==="photo"?"拍照提交":"品类下单"}/><DetailField label="最后修改" value={formatCloudTime(order.updateTime)}/><div className="col-span-2"><DetailField label="物品摘要" value={order.summary}/></div><div className="col-span-2"><DetailField label="用户备注" value={order.remark}/></div></div></section>
+      <section className="bg-white rounded-xl border border-gray-100 p-5 space-y-4"><h2 className="font-semibold text-gray-800">物品明细</h2>{order.items&&order.items.length>0?<div className="divide-y divide-gray-100">{order.items.map((item,index)=><div key={`${item.categoryName}-${index}`} className="py-3 flex justify-between text-sm"><span className="font-medium text-gray-700">{item.categoryName||"未命名品类"}</span><span className="text-gray-500">{item.estWeight?`约 ${item.estWeight} kg`:item.estCount?`约 ${item.estCount} 件`:"待现场确认"}</span></div>)}</div>:<p className="text-sm text-gray-400">拍照订单，无结构化物品明细</p>}</section>
+      <section className="bg-white rounded-xl border border-gray-100 p-5 space-y-4"><h2 className="font-semibold text-gray-800">处理结果</h2><div className="grid grid-cols-2 gap-4 text-sm"><DetailField label="平台估价" value={order.estimatePrice==null?"—":`¥${Number(order.estimatePrice).toFixed(2)}`}/><DetailField label="最终金额" value={order.finalPrice==null?"—":`¥${Number(order.finalPrice).toFixed(2)}`}/><DetailField label="实际重量" value={order.finalWeight==null?"—":`${order.finalWeight} kg`}/><DetailField label="实际件数" value={order.finalCount==null?"—":`${order.finalCount} 件`}/><DetailField label="回收人员" value={order.recyclerName}/><DetailField label="人员电话" value={order.recyclerPhone}/><div className="col-span-2"><DetailField label="管理备注" value={order.adminRemark}/></div>{order.cancelReason&&<div className="col-span-2"><DetailField label="取消原因" value={order.cancelReason}/></div>}</div></section>
+    </div>
+    <section className="bg-white rounded-xl border border-gray-100 p-5 space-y-4"><h2 className="font-semibold text-gray-800">物品照片</h2>{order.photoUrls&&order.photoUrls.length>0?<div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">{order.photoUrls.map((url,index)=><a key={url} href={url} target="_blank" rel="noreferrer"><img src={url} alt={`物品照片 ${index+1}`} className="w-full aspect-square object-cover rounded-lg border border-gray-100"/></a>)}</div>:<p className="text-sm text-gray-400">暂无物品照片</p>}</section>
+    {order.transferProofUrls&&order.transferProofUrls.length>0&&<section className="bg-white rounded-xl border border-gray-100 p-5 space-y-4"><h2 className="font-semibold text-gray-800">打款凭证</h2><div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">{order.transferProofUrls.map((url,index)=><a key={url} href={url} target="_blank" rel="noreferrer"><img src={url} alt={`打款凭证 ${index+1}`} className="w-full aspect-square object-cover rounded-lg border border-gray-100"/></a>)}</div></section>}
+  </div>;
+}
+
+function DetailField({label,value}:{label:string;value?:string|null}){return <div><p className="text-xs text-gray-400 mb-1">{label}</p><p className="text-sm text-gray-700 break-words">{value||"—"}</p></div>;}
+
 const NAV=[
   {id:"orders"    as Page, label:"订单管理", icon:Package  },
   {id:"staff"     as Page, label:"人员管理", icon:Users    },
@@ -1720,34 +1798,64 @@ const NAV=[
 ];
 
 function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps) {
+  const navigate=useNavigate();
+  const location=useLocation();
+  const detailMatch=location.pathname.match(/^\/orders\/([^/]+)$/);
+  const detailId=detailMatch?decodeURIComponent(detailMatch[1]):"";
   const [page,setPage]=useState<Page>("orders");
   const [orders,setOrders]=useState<Order[]>([]);
+  const [users,setUsers]=useState<UserRecord[]>([]);
+  const [staff,setStaff]=useState<Staff[]>([]);
   const [groups,setGroups]=useState<RecycleGroup[]>([]);
-  const [settings,setSettings]=useState<RecycleSettings>({key:"recycle_rules",minWeightKg:5,minCount:0,photoOrderCheckMinQuantity:false});
+  const [systemSettings,setSystemSettings]=useState<SystemSetting[]>([]);
   const [loading,setLoading]=useState(true);
 
   const refresh=async()=>{
     setLoading(true);
     try{
-      const [orderResult,categories,settingsResult]=await Promise.all([
+      const [firstOrderPage,categories,categoryGroups,settingsList,userList,staffList]=await Promise.all([
         callCloud<OrderListResult>("adminListOrders",{sessionToken:token,page:1,pageSize:50,status:"",keyword:""}),
         callCloud<CloudCategory[]>("adminListCategories",{sessionToken:token}),
-        callCloud<RecycleSettings>("adminGetSettings",{sessionToken:token}),
+        callCloud<CloudCategoryGroup[]>("adminListCategoryGroups",{sessionToken:token}),
+        callCloud<SystemSetting[]>("adminListSystemSettings",{sessionToken:token}),
+        callCloud<UserRecord[]>("adminListUsers",{sessionToken:token}),
+        callCloud<StaffRecord[]>("adminListStaff",{sessionToken:token}),
       ]);
-      const details=await Promise.all((orderResult.list||[]).map(async(order)=>{
+      const orderPages=[...(firstOrderPage.list||[])];
+      const pageCount=Math.ceil(firstOrderPage.total/50);
+      if(pageCount>1){
+        const rest=await Promise.all(Array.from({length:pageCount-1},(_,index)=>
+          callCloud<OrderListResult>("adminListOrders",{sessionToken:token,page:index+2,pageSize:50,status:"",keyword:""}),
+        ));
+        rest.forEach((result)=>orderPages.push(...(result.list||[])));
+      }
+      const details=await Promise.all(orderPages.map(async(order)=>{
         try{return await callCloud<CloudOrder>("adminGetOrderDetail",{sessionToken:token,id:order._id});}
         catch{return order;}
       }));
       setOrders(details.map(cloudOrderToFigma));
-      setGroups(categoriesToGroups(categories||[]));
-      setSettings(settingsResult);
+      setUsers(userList||[]);
+      setStaff(staffFromCloud(staffList||[]));
+      setGroups(categoriesToGroups(categories||[],categoryGroups||[]));
+      setSystemSettings(settingsList||[]);
     }catch(error){onError(error);}finally{setLoading(false);}
   };
 
   useEffect(()=>{void refresh();},[token]);
 
-  const staff=useMemo(()=>staffFromOrders(orders),[orders]);
   const unsupported=(feature:string)=>notify({kind:"error",text:`${feature}尚未接入后端，当前未保存任何演示数据`});
+
+  const saveStaff=async(item:Staff)=>{
+    try{
+      await callCloud("adminSaveStaff",{sessionToken:token,staff:{
+        _id:item.docId,employeeNo:item.id,openid:item.openid,name:item.name,phone:item.phone,
+        status:item.status,joinDate:item.joinDate==="—"?"":item.joinDate,area:item.area==="—"?"":item.area,store:item.store==="—"?"":item.store,
+      }});
+      const list=await callCloud<StaffRecord[]>("adminListStaff",{sessionToken:token});
+      setStaff(staffFromCloud(list||[]));
+      notify({kind:"success",text:"工作人员已保存"});
+    }catch(error){onError(error);throw error;}
+  };
 
   const saveOrder=async(order:Order)=>{
     if(!order.docId){unsupported("订单更新");return;}
@@ -1760,6 +1868,7 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
         finalWeight:order.finalWeight ?? "",
         finalCount:order.finalCount ?? "",
         finalPrice:order.amount ?? "",
+        recyclerId:staff.find((item)=>item.name===order.recyclers[0])?.docId || "",
         recyclerName:order.recyclers[0] || "",
         recyclerPhone:order.recyclerPhone || "",
         adminRemark:order.adminRemark || "",
@@ -1770,10 +1879,41 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
     }catch(error){onError(error);throw error;}
   };
 
-  const saveCategory=async(item:RecycleItem)=>{
+  const assignOrderRecycler=async(order:Order,person:Staff)=>{
+    if(!order.docId||!person.docId){
+      const error=new Error("订单或工作人员缺少数据库 ID，请刷新页面后重试");
+      onError(error);
+      throw error;
+    }
+    try{
+      await callCloud("adminAssignOrderRecycler",{sessionToken:token,orderId:order.docId,staffId:person.docId});
+      setOrders((current)=>current.map((item)=>item.docId===order.docId?{
+        ...item,
+        status:item.status==="待接单"?"已接单":item.status,
+        recyclers:[person.name],
+        recyclerPhone:person.phone,
+        lastModified:nowStr(),
+      }:item));
+      notify({kind:"success",text:`已将订单分配给 ${person.name}`});
+    }catch(error){
+      onError(error);
+      throw error;
+    }
+  };
+
+  const reloadCategories=async()=>{
+    const [categories,categoryGroups]=await Promise.all([
+      callCloud<CloudCategory[]>("adminListCategories",{sessionToken:token}),
+      callCloud<CloudCategoryGroup[]>("adminListCategoryGroups",{sessionToken:token}),
+    ]);
+    setGroups(categoriesToGroups(categories||[],categoryGroups||[]));
+  };
+
+  const saveCategory=async(item:RecycleItem,gid:string)=>{
     const unit:CloudCategory["unit"]=item.unit==="件"?"件":"kg";
     const category:CloudCategory={
       _id:item.categoryId,
+      groupId:gid==="cloud-categories"?"":gid,
       name:item.name,
       unit,
       priceRef:item.fieldEstimate?"现场估价":item.priceRef || `${item.price}元/${unit}起`,
@@ -1783,16 +1923,41 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
     try{
       await callCloud("adminSaveCategory",{sessionToken:token,category});
       notify({kind:"success",text:"品类已保存"});
-      const categories=await callCloud<CloudCategory[]>("adminListCategories",{sessionToken:token});
-      setGroups(categoriesToGroups(categories||[]));
+      await reloadCategories();
     }catch(error){onError(error);throw error;}
   };
 
-  const saveSettings=async(next:RecycleSettings)=>{
+  const saveCategoryGroup=async(group:CloudCategoryGroup)=>{
     try{
-      const saved=await callCloud<RecycleSettings>("adminSaveSettings",{sessionToken:token,settings:next});
-      setSettings(saved);
-      notify({kind:"success",text:"系统配置已保存"});
+      await callCloud("adminSaveCategoryGroup",{sessionToken:token,group});
+      notify({kind:"success",text:"品类分组已创建"});
+      await reloadCategories();
+    }catch(error){onError(error);throw error;}
+  };
+
+  const reloadSystemSettings=async()=>{
+    const list=await callCloud<SystemSetting[]>("adminListSystemSettings",{sessionToken:token});
+    setSystemSettings(list||[]);
+  };
+
+  const saveSystemSetting=async(item:SystemSetting)=>{
+    try{
+      await callCloud<SystemSetting>("adminSaveSystemSetting",{sessionToken:token,setting:item});
+      await reloadSystemSettings();
+      notify({kind:"success",text:"配置已保存"});
+    }catch(error){onError(error);throw error;}
+  };
+
+  const deleteSystemSetting=async(item:SystemSetting)=>{
+    if(item._id?.startsWith("virtual:")){
+      notify({kind:"error",text:"内置默认配置不能删除，可通过编辑覆盖默认值"});
+      return;
+    }
+    if(!window.confirm(`确定删除配置 ${item.key} 吗？`))return;
+    try{
+      await callCloud("adminDeleteSystemSetting",{sessionToken:token,id:item._id,key:item.key});
+      await reloadSystemSettings();
+      notify({kind:"success",text:"配置已删除"});
     }catch(error){onError(error);throw error;}
   };
 
@@ -1808,7 +1973,7 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
         <nav className="flex-1 px-3 py-4 space-y-1">
           {NAV.map(({id,label,icon:Icon})=>{
             const active=page===id;
-            return(<button key={id} onClick={()=>setPage(id)} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${active?"text-white":"text-green-200/60 hover:text-green-100 hover:bg-white/5"}`} style={active?{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}:{}}>
+            return(<button key={id} onClick={()=>{setPage(id);navigate(`/${id}`);}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${active?"text-white":"text-green-200/60 hover:text-green-100 hover:bg-white/5"}`} style={active?{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}:{}}>
               <Icon size={16}/>{label}{active&&<ChevronRight size={13} className="ml-auto opacity-70"/>}
             </button>);
           })}
@@ -1826,12 +1991,12 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
           <div className="flex items-center gap-2 text-sm text-gray-400"><span>首页</span><ChevronRight size={12}/><span className="text-gray-700 font-medium">{NAV.find(n=>n.id===page)?.label}</span></div>
           <div className="flex items-center gap-2 text-xs text-gray-400"><div className="w-2 h-2 rounded-full bg-green-400 animate-pulse"/>系统运行正常</div>
         </div>
-        {loading?<div className="min-h-[420px] flex flex-col items-center justify-center text-gray-400 gap-3"><Loader size={24} className="animate-spin text-green-600"/><p className="text-sm">正在加载真实业务数据…</p></div>:<>
-          {page==="orders"    &&<OrdersPage staff={staff} groups={groups} orders={orders} onSaveOrder={saveOrder} onUnsupported={unsupported}/>} 
-          {page==="staff"     &&<StaffPage staff={staff} onUnsupported={unsupported}/>} 
-          {page==="cats"      &&<RecycleCatsPage groups={groups} onSaveCategory={saveCategory} onUnsupported={unsupported}/>} 
+        {detailId?<AdminOrderDetailPage id={detailId} token={token} onBack={()=>navigate("/orders")} onError={onError}/>:loading?<div className="min-h-[420px] flex flex-col items-center justify-center text-gray-400 gap-3"><Loader size={24} className="animate-spin text-green-600"/><p className="text-sm">正在加载真实业务数据…</p></div>:<>
+          {page==="orders"    &&<OrdersPage staff={staff} groups={groups} orders={orders} onSaveOrder={saveOrder} onAssignRecycler={assignOrderRecycler} onUnsupported={unsupported} onViewOrder={(id)=>navigate(`/orders/${encodeURIComponent(id)}`)}/>}
+          {page==="staff"     &&<StaffPage staff={staff} users={users} onSaveStaff={saveStaff}/>}
+          {page==="cats"      &&<RecycleCatsPage groups={groups} onSaveCategory={saveCategory} onSaveGroup={saveCategoryGroup} onUnsupported={unsupported}/>}
           {page==="analytics" &&<AnalyticsPage orders={orders}/>} 
-          {page==="system"    &&<SystemPage settings={settings} onSave={saveSettings}/>} 
+          {page==="system"    &&<SystemPage items={systemSettings} onSave={saveSystemSetting} onDelete={deleteSystemSetting}/>}
         </>}
       </main>
     </div>

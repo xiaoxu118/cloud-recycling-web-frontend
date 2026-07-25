@@ -30,8 +30,11 @@ export interface Order {
   finalWeight?: number | null;
   finalCount?: number | null;
   finalPrice?: number | null;
+  recyclerId?: string;
+  recyclerOpenid?: string;
   recyclerName?: string;
   recyclerPhone?: string;
+  assignedAt?: number;
   transferProofs?: string[];
   transferProofUrls?: string[];
   cancelReason?: string;
@@ -44,6 +47,7 @@ export interface Order {
 
 export interface Category {
   _id?: string;
+  groupId?: string;
   name: string;
   unit: "kg" | "件";
   priceRef?: string;
@@ -51,16 +55,20 @@ export interface Category {
   enabled: boolean;
 }
 
+export interface CategoryGroup {
+  _id?: string;
+  name: string;
+  description?: string;
+  sortOrder: number;
+  enabled: boolean;
+  allowFieldEstimate?: boolean;
+}
+
 export interface RecycleSettings {
   key: "recycle_rules";
   minWeightKg: number;
   minCount: number;
   photoOrderCheckMinQuantity: boolean;
-  siteName?: string;
-  servicePhone?: string;
-  notifyEnabled?: boolean;
-  autoAssign?: boolean;
-  maxDistanceKm?: number;
   updateTime?: number;
 }
 
@@ -68,4 +76,42 @@ export interface OrderListResult {
   list: Order[];
   total: number;
   hasMore: boolean;
+}
+
+export interface SystemSetting {
+  _id?: string;
+  key: string;
+  label: string;
+  type: "text" | "number" | "boolean" | "image";
+  value: string;
+  description?: string;
+  imageUrl?: string;
+  updateTime?: number;
+}
+
+export interface UserRecord {
+  _id: string;
+  openid: string;
+  nickName?: string;
+  avatarUrl?: string;
+  phone?: string;
+  orderCount: number;
+  addressCount: number;
+  createTime?: number;
+  updateTime?: number;
+  lastLoginTime?: number;
+}
+
+export interface StaffRecord {
+  _id?: string;
+  employeeNo: string;
+  openid?: string;
+  name: string;
+  phone: string;
+  status: "online" | "resting" | "resigned";
+  area?: string;
+  store?: string;
+  joinDate?: string;
+  createTime?: number;
+  updateTime?: number;
 }

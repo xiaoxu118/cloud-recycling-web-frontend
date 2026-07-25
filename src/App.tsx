@@ -232,8 +232,9 @@ function LoginPage({ onSuccess }: { onSuccess: (auth: AuthState) => void }) {
       setAccountError("账号或密码错误");
       return;
     }
-    const previewUrl = `${window.location.origin}${window.location.pathname}?mock=1#/orders`;
-    window.location.assign(previewUrl);
+    const cleanUrl = `${window.location.pathname}#/orders`;
+    window.history.replaceState(null, "", cleanUrl);
+    onSuccess({ token: "local-dev-session", adminName: "开发管理员" });
   };
 
   return (
@@ -267,12 +268,12 @@ function LoginPage({ onSuccess }: { onSuccess: (auth: AuthState) => void }) {
           ) : (
             <form className="account-login-form" onSubmit={accountLogin}>
               <div className="account-login-icon">管</div>
-              <div className="account-login-title"><h2>开发账号登录</h2><p>仅用于本地页面开发与交互验证</p></div>
+              <div className="account-login-title"><h2>开发账号登录</h2><p>连接当前配置的真实 CloudBase 环境</p></div>
               <label><span>账号</span><input autoComplete="username" value={account} onChange={(event) => setAccount(event.target.value)} placeholder="请输入账号" /></label>
               <label><span>密码</span><input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="请输入密码" /></label>
               {accountError && <p className="account-error" role="alert">{accountError}</p>}
-              <button className="button primary full" type="submit">登录并进入本地预览</button>
-              <p className="dev-only-note">开发模式专用，不访问真实订单数据</p>
+              <button className="button primary full" type="submit">登录并读取真实数据</button>
+              <p className="dev-only-note">仅在本地开发模式显示，依赖云函数开发鉴权开关</p>
             </form>
           )}
         </div>

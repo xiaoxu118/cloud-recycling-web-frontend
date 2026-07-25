@@ -4,7 +4,7 @@
 
 生产代码位于 `src/`。`src/main.tsx` 负责挂载 React 应用和 Hash Router，`src/App.tsx` 包含主要后台业务流程。CloudBase 接口及本地预览数据分别放在 `src/api/cloud.ts` 和 `src/api/mock.ts`，共享领域类型统一定义在 `src/types.ts`。全局样式分布于 `src/login.css`、`src/styles.css` 和 `src/figma/styles/`。
 
-`public/config.js` 是运行时环境配置，构建时会原样复制。`figma-ui-export/` 和 `docs/design/` 下的设计截图仅作为设计参考，不应作为生产代码修改。其中 `docs/design/source/` 保存 Figma 原始参考，`docs/design/implementation/` 保存实现及验收截图。`dist/` 为构建产物，请勿手动编辑。
+`public/config.js` 是运行时环境配置，构建时会原样复制。设计原则和实现范围记录在 `DESIGN.md`；生产界面位于 `src/figma/`。本地 Figma 导出和视觉验收截图不纳入版本控制。`dist/` 为构建产物，请勿手动编辑。
 
 ## 构建、测试与开发命令
 
@@ -23,7 +23,7 @@ API 逻辑应保留在 `src/api/`，业务数据结构优先复用 `src/types.ts
 
 ## 测试规范
 
-当前未配置测试框架或覆盖率要求。每次修改后运行 `npm run build`，并在 Mock 模式下手动验证受影响的路由。至少检查加载、空数据、成功和错误状态。视觉改动应与 `docs/design/implementation/` 中对应的 `implementation-*.png` 截图比对。
+当前未配置测试框架或覆盖率要求。每次修改后运行 `npm run build`，并在 Mock 模式下手动验证受影响的路由。至少检查加载、空数据、成功和错误状态。视觉改动应对照 `DESIGN.md` 中链接的 Figma 原始设计。
 
 若新增自动化测试，测试文件与源码就近放置，并命名为 `*.test.ts` 或 `*.test.tsx`，同时在 `package.json` 中添加对应测试脚本。
 
