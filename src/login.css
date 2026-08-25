@@ -27,39 +27,124 @@
 .login-page .button.primary:hover { background: var(--green-800); }
 .login-page .button.secondary { color: #34423e; background: #fff; border-color: #d8e1dd; }
 .login-page .button.full { width: 100%; }
-.login-card { width: min(930px, 100%); display: grid; grid-template-columns: 1.2fr .8fr; overflow: hidden; background: #fff; border: 1px solid rgba(15,118,110,.13); border-radius: 24px; box-shadow: var(--shadow); }
-.login-copy { padding: 64px 60px; background: linear-gradient(160deg, #f9fffc 0%, #e9f7f0 100%); }
-.brand-lockup { display: flex; align-items: center; gap: 11px; font-weight: 800; font-size: 20px; color: var(--green-900); }
-.brand-mark { display: inline-grid; place-items: center; width: 42px; height: 42px; color: #fff; background: linear-gradient(145deg, #16a085, #087463); border-radius: 12px; box-shadow: 0 7px 18px rgba(15,118,110,.24); }
-.eyebrow { margin: 64px 0 12px; color: var(--green-700); font-size: 13px; font-weight: 800; letter-spacing: .12em; }
-.login-copy h1 { margin-bottom: 18px; font-size: clamp(30px, 4vw, 42px); letter-spacing: -.04em; }
-.lead { color: #5d6d67; line-height: 1.8; max-width: 510px; }
-.security-note { margin-top: 34px; color: #466057; font-size: 13px; }
-.security-note span { color: var(--green-700); margin-right: 6px; }
-.qr-panel { padding: 42px 48px; display: flex; flex-direction: column; align-items: center; justify-content: center; }
-.login-methods { align-self: stretch; display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 26px; padding: 4px; border-radius: 10px; background: #eef3f1; }
-.login-methods button { min-height: 36px; border: 0; border-radius: 7px; color: #687570; background: transparent; font-size: 12px; font-weight: 700; }
-.login-methods button.active { color: var(--green-800); background: #fff; box-shadow: 0 2px 8px rgba(13,52,42,.09); }
-.qr-frame { width: 236px; height: 236px; display: grid; place-items: center; padding: 12px; border: 1px solid var(--line); border-radius: 18px; background: #fbfdfc; box-shadow: inset 0 0 0 5px #fff; }
-.qr-frame img { width: 100%; height: 100%; object-fit: contain; }
-.qr-placeholder { color: var(--muted); }
-.login-message { min-height: 44px; margin: 22px 0 10px; color: var(--muted); font-size: 13px; text-align: center; line-height: 1.6; }
-.dev-path { max-width: 250px; color: #8a5c00; font-size: 11px; overflow-wrap: anywhere; }
-.account-login-form { align-self: stretch; display: grid; gap: 15px; }
-.account-login-form label > span { display: block; margin-bottom: 7px; color: #53605c; font-size: 12px; font-weight: 650; }
-.account-login-form input { width: 100%; border: 1px solid #d6dfdb; border-radius: 8px; background: #fff; color: #1f2b27; outline: none; padding: 10px 11px; }
-.account-login-form input:focus { border-color: #0d9488; box-shadow: 0 0 0 3px rgba(13,148,136,.11); }
-.account-login-icon { width: 60px; height: 60px; display: grid; place-items: center; margin: 0 auto; border-radius: 18px; color: #fff; background: linear-gradient(145deg, #16a085, #087463); font-size: 22px; font-weight: 800; box-shadow: 0 8px 20px rgba(15,118,110,.2); }
-.account-login-title { text-align: center; }
-.account-login-title h2 { margin: 0 0 7px; font-size: 19px; }
-.account-login-title p, .dev-only-note { margin: 0; color: var(--muted); font-size: 11px; }
-.account-error { margin: -3px 0 0; color: var(--danger); font-size: 12px; }
-.dev-only-note { text-align: center; }
 
-@media (max-width: 680px) {
+/* 单卡片：以后再加二维码 tab 时仅需在卡片里加一组 tabs，原结构兼容 */
+.login-card {
+  width: min(440px, 100%);
+  padding: 40px 36px;
+  background: #fff;
+  border: 1px solid rgba(15, 118, 110, .13);
+  border-radius: 20px;
+  box-shadow: var(--shadow);
+}
+
+.login-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 28px;
+  font-weight: 800;
+  color: var(--green-900);
+}
+.login-brand-mark {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  color: #fff;
+  background: linear-gradient(145deg, #16a085, #087463);
+  border-radius: 10px;
+  font-size: 16px;
+  box-shadow: 0 5px 14px rgba(15, 118, 110, .22);
+}
+.login-brand-name { font-size: 17px; }
+.login-brand-tag {
+  margin-left: auto;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--green-700);
+  background: #e9f7f0;
+  border-radius: 999px;
+}
+
+.login-title {
+  margin: 0 0 28px;
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -.02em;
+  color: #16201d;
+}
+
+/* 预留：以后加二维码 tab 时把这块放开 */
+.login-methods {
+  display: none;
+}
+
+.phone-login-form {
+  display: grid;
+  gap: 16px;
+}
+.phone-login-form label,
+.phone-code-row {
+  display: block;
+}
+.phone-login-form label > span,
+.phone-code-row > span {
+  display: block;
+  margin-bottom: 8px;
+  color: #53605c;
+  font-size: 13px;
+  font-weight: 650;
+}
+.phone-login-form input {
+  width: 100%;
+  border: 1px solid #d6dfdb;
+  border-radius: 9px;
+  background: #fff;
+  color: #1f2b27;
+  outline: none;
+  padding: 11px 12px;
+  font-size: 14px;
+  transition: border-color .15s ease, box-shadow .15s ease;
+}
+.phone-login-form input:focus {
+  border-color: #0d9488;
+  box-shadow: 0 0 0 3px rgba(13, 148, 136, .13);
+}
+
+.phone-code-input {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.phone-code-input input {
+  flex: 1 1 160px;
+  min-width: 160px;
+}
+.phone-code-btn {
+  flex: 0 0 auto;
+  min-width: 108px;
+  padding: 0 12px;
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.phone-error-slot {
+  min-height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.phone-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+@media (max-width: 480px) {
   .login-page { padding: 14px; }
-  .login-card { grid-template-columns: 1fr; }
-  .login-copy { padding: 34px 28px; }
-  .eyebrow { margin-top: 34px; }
-  .qr-panel { padding: 32px 28px; }
+  .login-card { padding: 28px 22px; }
 }

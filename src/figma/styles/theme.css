@@ -1,7 +1,7 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --font-size: 14px;
+  --font-size: 16px;
   --background: #f0f2f5;
   --foreground: #1a1f2e;
   --card: #ffffff;
@@ -178,5 +178,53 @@
     font-weight: var(--font-weight-normal);
     line-height: 1.5;
   }
+}
+
+/* ─── Mobile Responsive ─────────────────────────────────────────────────────── */
+@media (max-width: 768px) {
+  /* 页面内边距缩小 */
+  .p-6 { padding: 1rem; }
+  .space-y-5 > * + * { margin-top: 0.75rem; }
+  
+  /* 表格横向滚动 + 圆角容器 */
+  .bg-white.rounded-xl.overflow-hidden.border {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  table { min-width: 600px; }
+  
+  /* 统计卡片自适应 */
+  .grid-cols-3 { grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); }
+  .grid-cols-5 { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+  
+  /* 筛选栏堆叠 */
+  .flex.gap-2.flex-wrap {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .flex.gap-2.flex-wrap > * { width: 100%; }
+  
+  /* 模态框全屏 */
+  .fixed.inset-0.z-50 .relative.max-w-lg,
+  .fixed.inset-0.z-50 .relative.max-w-xl {
+    max-width: calc(100vw - 2rem);
+    max-height: calc(100vh - 2rem);
+  }
+  
+  /* 按钮触摸目标 */
+  button:not(.p-1):not(.p-1\.5):not(.p-2) {
+    min-height: 40px;
+  }
+  
+  /* 表单输入 */
+  input, select, textarea {
+    font-size: 16px; /* 防止 iOS 自动缩放 */
+  }
+}
+
+@media (max-width: 480px) {
+  /* 极小屏幕进一步简化 */
+  .grid-cols-2 { grid-template-columns: 1fr; }
+  .hidden.sm\:inline { display: none; }
 }
 

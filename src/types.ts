@@ -17,7 +17,12 @@ export interface OrderItem {
 export interface Order {
   _id: string;
   orderNo: string;
-  source?: "category" | "photo";
+  source?: "category" | "photo" | "general" | "demolition";
+  orderType?: "recycle" | "furniture_demolition" | "shop_demolition";
+  demolition?: {
+    scene?: "home" | "business";
+    items?: string[];
+  } | null;
   summary?: string;
   status: OrderStatus;
   addressSnapshot?: AddressSnapshot;
@@ -31,7 +36,6 @@ export interface Order {
   finalCount?: number | null;
   finalPrice?: number | null;
   recyclerId?: string;
-  recyclerOpenid?: string;
   recyclerName?: string;
   recyclerPhone?: string;
   assignedAt?: number;
@@ -47,21 +51,16 @@ export interface Order {
 
 export interface Category {
   _id?: string;
-  groupId?: string;
+  parentId?: string | null;
   name: string;
-  unit: "kg" | "件";
+  unit: "kg" | "斤" | "台" | "件" | "双" | "袋" | "箱";
   priceRef?: string;
+  minVisitKg?: number;
   sortOrder: number;
   enabled: boolean;
-}
-
-export interface CategoryGroup {
-  _id?: string;
-  name: string;
-  description?: string;
-  sortOrder: number;
-  enabled: boolean;
-  allowFieldEstimate?: boolean;
+  showOnHome?: boolean;
+  deleted?: boolean;
+  deletedAt?: number;
 }
 
 export interface RecycleSettings {
@@ -82,7 +81,7 @@ export interface SystemSetting {
   _id?: string;
   key: string;
   label: string;
-  type: "text" | "number" | "boolean" | "image";
+  type: "text" | "number" | "boolean" | "image" | "longtext";
   value: string;
   description?: string;
   imageUrl?: string;
@@ -91,7 +90,7 @@ export interface SystemSetting {
 
 export interface UserRecord {
   _id: string;
-  openid: string;
+  wechatBound?: boolean;
   nickName?: string;
   avatarUrl?: string;
   phone?: string;
@@ -105,13 +104,28 @@ export interface UserRecord {
 export interface StaffRecord {
   _id?: string;
   employeeNo: string;
-  openid?: string;
+  wechatBound?: boolean;
   name: string;
   phone: string;
   status: "online" | "resting" | "resigned";
   area?: string;
   store?: string;
   joinDate?: string;
+  createTime?: number;
+  updateTime?: number;
+}
+
+/** 后端 admins 集合记录。phone 为主键，cloudbaseUid/openid 由登录流程自动回填。 */
+export interface AdminRecord {
+  _id: string;
+  phone: string;
+  name: string;
+  role: string;
+  enabled: boolean;
+  cloudbaseUid?: string;
+  openid?: string;
+  wechatBound?: boolean;
+  loginMethod?: "phone" | "wechat" | "none";
   createTime?: number;
   updateTime?: number;
 }

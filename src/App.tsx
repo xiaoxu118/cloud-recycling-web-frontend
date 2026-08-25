@@ -16,7 +16,7 @@ import {
   Users,
   X,
 } from "lucide-react";
-import { callCloud, CloudError, initCloud, uploadTransferProof } from "./api/cloud";
+import { callCloud, CloudError, getCloudBaseApp, initCloud, uploadTransferProof } from "./api/cloud";
 import { isDevPreview } from "./api/mock";
 import FigmaAdminApp from "./figma/FigmaAdmin";
 import type { Category, Order, OrderListResult, OrderStatus, RecycleSettings } from "./types";
@@ -29,9 +29,11 @@ const STATUS_TEXT: Record<OrderStatus, string> = {
 };
 
 const ERROR_TEXT: Record<string, string> = {
-  ADMIN_SESSION_REQUIRED: "请先扫码登录",
-  ADMIN_SESSION_EXPIRED: "登录已过期，请重新扫码",
-  NO_PERMISSION: "当前微信不在管理员白名单",
+  ADMIN_SESSION_REQUIRED: "请先登录",
+  ADMIN_SESSION_EXPIRED: "登录已过期，请重新登录",
+  NO_PERMISSION: "当前账号不在管理员白名单",
+  PHONE_NOT_IN_WHITELIST: "当前手机号不在管理员白名单",
+  PHONE_BOUND_TO_OTHER_ACCOUNT: "该手机号已绑定其他账号，请联系管理员解绑",
   LOGIN_TICKET_EXPIRED: "登录码已过期，请刷新",
   TRANSFER_PROOF_REQUIRED: "完成订单前请上传打款凭证",
   FINAL_PRICE_REQUIRED: "完成订单前请填写最终金额",
@@ -40,7 +42,11 @@ const ERROR_TEXT: Record<string, string> = {
   ORDER_STATUS_INVALID: "订单状态已变化，请刷新后重试",
   ORDER_NOT_FOUND: "订单不存在或已被删除",
   PARAM_INVALID: "请检查填写内容",
+  CATEGORY_GROUP_REQUIRED: "请先选择一级分类",
+  CATEGORY_GROUP_NOT_FOUND: "所选一级分类不存在，请刷新后重试",
+  CATEGORY_GROUP_NOT_EMPTY: "该一级分类下还有二级品类，请先移出或删除子品类",
   DB_ERROR: "系统暂时不可用，请稍后重试",
+  EMPTY_RESPONSE: "云函数未返回数据，请确认 quickstartFunctions 已部署最新版本",
   CLOUDBASE_SDK_MISSING: "CloudBase SDK 加载失败",
   CLOUDBASE_CONFIG_MISSING: "请先配置云开发环境",
 };
@@ -84,12 +90,40 @@ function App() {
     adminName: isDevPreview() ? "admin" : localStorage.getItem("admin_name") || "",
   }));
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [checkingAuth, setCheckingAuth] = useState(true);
 
   useEffect(() => {
     initCloud()
       .then(() => setReady(true))
       .catch((error) => setFatalError(getErrorText(error)));
   }, []);
+
+  // 启动时校验 localStorage 里的 token 是否仍然有效，避免旧 token 导致卡在错误状态
+  useEffect(() => {
+    if (!ready || isDevPreview()) {
+      setCheckingAuth(false);
+      return;
+    }
+    if (!auth.token) {
+      setCheckingAuth(false);
+      return;
+    }
+    // 用一个轻量接口探测 token 是否过期
+    callCloud("adminGetSettings", { sessionToken: auth.token })
+      .then(() => setCheckingAuth(false))
+      .catch((error) => {
+        if (
+          error instanceof CloudError &&
+          ["ADMIN_SESSION_REQUIRED", "ADMIN_SESSION_EXPIRED"].includes(error.code)
+        ) {
+          // token 已失效，清掉跳登录页
+          localStorage.removeItem("admin_session_token");
+          localStorage.removeItem("admin_name");
+          setAuth({ token: "", adminName: "" });
+        }
+        setCheckingAuth(false);
+      });
+  }, [ready, auth.token]);
 
   useEffect(() => {
     if (!toast) return;
@@ -117,7 +151,7 @@ function App() {
   );
 
   if (fatalError) return <SystemError text={fatalError} />;
-  if (!ready) return <FullscreenLoading text="正在连接云回收服务…" />;
+  if (!ready || checkingAuth) return <FullscreenLoading text="正在连接帮帮回收服务…" />;
 
   return (
     <>
@@ -155,128 +189,112 @@ function App() {
 }
 
 function LoginPage({ onSuccess }: { onSuccess: (auth: AuthState) => void }) {
-  const [loginMethod, setLoginMethod] = useState<"wechat" | "account">("wechat");
-  const [account, setAccount] = useState("");
-  const [password, setPassword] = useState("");
-  const [accountError, setAccountError] = useState("");
-  const [qrUrl, setQrUrl] = useState("");
-  const [ticket, setTicket] = useState("");
-  const [webNonce, setWebNonce] = useState("");
-  const [fallbackPath, setFallbackPath] = useState("");
-  const [message, setMessage] = useState("正在生成登录码…");
-  const [loading, setLoading] = useState(false);
-  const polling = useRef<number | null>(null);
+  const [phone, setPhone] = useState("");
+  const [code, setCode] = useState("");
+  const [sendingCode, setSendingCode] = useState(false);
+  const [verifying, setVerifying] = useState(false);
+  const [countdown, setCountdown] = useState(0);
+  const [phoneError, setPhoneError] = useState("");
+  const verifyOtpRef = useRef<((args: { token: string }) => Promise<unknown>) | null>(null);
 
-  const clearPolling = () => {
-    if (polling.current) window.clearInterval(polling.current);
-    polling.current = null;
-  };
-
-  const createTicket = useCallback(async () => {
-    clearPolling();
-    setLoading(true);
-    setQrUrl("");
-    setFallbackPath("");
-    setMessage("正在生成登录码…");
-    try {
-      const data = await callCloud<{
-        ticket: string;
-        webNonce: string;
-        qrUrl?: string;
-        path?: string;
-      }>("adminCreateLoginTicket");
-      setTicket(data.ticket);
-      setWebNonce(data.webNonce);
-      setQrUrl(data.qrUrl || "");
-      setFallbackPath(data.path || "");
-      setMessage(data.qrUrl ? "请使用微信扫码，并在小程序中确认。" : "登录码生成失败，请检查小程序码权限。");
-    } catch (error) {
-      setMessage(getErrorText(error));
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
+  // 60s 倒计时，同号 30s 内只能发 1 次（SDK 也会拒）。
   useEffect(() => {
-    void createTicket();
-    return clearPolling;
-  }, [createTicket]);
+    if (countdown <= 0) return;
+    const timer = window.setInterval(() => setCountdown((value) => (value > 0 ? value - 1 : 0)), 1000);
+    return () => window.clearInterval(timer);
+  }, [countdown]);
 
-  useEffect(() => {
-    if (!ticket || !webNonce) return;
-    clearPolling();
-    polling.current = window.setInterval(async () => {
-      try {
-        const data = await callCloud<{ status: string; sessionToken?: string; adminName?: string }>(
-          "adminCheckLoginTicket",
-          { ticket, webNonce },
-        );
-        if (data.status === "confirmed" && data.sessionToken) {
-          clearPolling();
-          onSuccess({ token: data.sessionToken, adminName: data.adminName || "管理员" });
-        }
-      } catch (error) {
-        if (error instanceof CloudError && error.code === "LOGIN_TICKET_EXPIRED") {
-          clearPolling();
-          setMessage(ERROR_TEXT.LOGIN_TICKET_EXPIRED);
-        }
-      }
-    }, 1800);
-    return clearPolling;
-  }, [ticket, webNonce, onSuccess]);
+  const isPhoneValid = /^1[3-9]\d{9}$/.test(phone);
 
-  const accountLogin = (event: FormEvent) => {
-    event.preventDefault();
-    setAccountError("");
-    if (account !== "admin" || password !== "admin123") {
-      setAccountError("账号或密码错误");
+  const sendCode = async () => {
+    setPhoneError("");
+    if (!isPhoneValid) {
+      setPhoneError("请输入正确的 11 位手机号");
       return;
     }
-    const cleanUrl = `${window.location.pathname}#/orders`;
-    window.history.replaceState(null, "", cleanUrl);
-    onSuccess({ token: "local-dev-session", adminName: "开发管理员" });
+    setSendingCode(true);
+    try {
+      // 复用 initCloud() 已经创建好的 SDK app，避免重复 init 触发新的匿名会话。
+      const app = getCloudBaseApp();
+      const auth = app && app.auth;
+      if (!auth || !auth.signInWithOtp) {
+        throw new Error("CloudBase SDK 未初始化，请刷新页面重试");
+      }
+      const { data, error } = await auth.signInWithOtp({ phone: `+86 ${phone}` });
+      if (error) throw error;
+      if (data && typeof data.verifyOtp === "function") {
+        verifyOtpRef.current = (args) => data.verifyOtp(args);
+      }
+      setCountdown(60);
+      setPhoneError("");
+    } catch (error) {
+      setPhoneError((error as Error).message || "验证码发送失败，请重试");
+    } finally {
+      setSendingCode(false);
+    }
+  };
+
+  const verifyAndLogin = async (event: FormEvent) => {
+    event.preventDefault();
+    setPhoneError("");
+    if (!isPhoneValid) {
+      setPhoneError("请输入正确的 11 位手机号");
+      return;
+    }
+    if (!/^\d{4,8}$/.test(code)) {
+      setPhoneError("请输入正确的验证码");
+      return;
+    }
+    if (!verifyOtpRef.current) {
+      setPhoneError("请先点击「发送验证码」");
+      return;
+    }
+    setVerifying(true);
+    try {
+      const verifyResult = (await verifyOtpRef.current({ token: code })) as { data?: { user?: { id?: string } }; error?: { message?: string } };
+      if (verifyResult.error) throw new Error(verifyResult.error.message || "验证码错误");
+      const uid = verifyResult.data?.user?.id;
+      if (!uid) throw new Error("未取到登录用户标识");
+      // 用 CloudBase 拿到的真实 uid 调云函数换 admin sessionToken。
+      const result = await callCloud<{ sessionToken: string; adminName: string }>(
+        "adminPhoneLogin",
+        { phone, cloudbaseUid: uid },
+      );
+      onSuccess({ token: result.sessionToken, adminName: result.adminName || "管理员" });
+    } catch (error) {
+      if (error instanceof CloudError) {
+        const data = error.data as { reason?: string } | undefined;
+        const reason = data && data.reason;
+        if (error.code === "NO_PERMISSION" && reason === "PHONE_NOT_IN_WHITELIST") {
+          setPhoneError(ERROR_TEXT.PHONE_NOT_IN_WHITELIST);
+        } else if (error.code === "NO_PERMISSION" && reason === "PHONE_BOUND_TO_OTHER_ACCOUNT") {
+          setPhoneError(ERROR_TEXT.PHONE_BOUND_TO_OTHER_ACCOUNT);
+        } else {
+          setPhoneError(getErrorText(error));
+        }
+      } else {
+        setPhoneError((error as Error).message || "登录失败，请重试");
+      }
+    } finally {
+      setVerifying(false);
+    }
   };
 
   return (
     <main className="login-page">
       <section className="login-card">
-        <div className="login-copy">
-          <div className="brand-lockup"><span className="brand-mark">云</span><span>云回收</span></div>
-          <p className="eyebrow">运营管理平台</p>
-          <h1>微信扫码登录</h1>
-          <p className="lead">使用已加入管理员白名单的微信扫码，在小程序内确认后进入后台。</p>
-          <div className="security-note"><span aria-hidden="true">✓</span> 订单与用户信息均由云函数验证权限</div>
+        <div className="login-brand">
+          <span className="login-brand-mark">帮</span>
+          <span className="login-brand-name">帮帮回收</span>
+          <span className="login-brand-tag">管理后台</span>
         </div>
-        <div className="qr-panel">
-          {import.meta.env.DEV && (
-            <div className="login-methods" role="tablist" aria-label="登录方式">
-              <button type="button" role="tab" aria-selected={loginMethod === "wechat"} className={loginMethod === "wechat" ? "active" : ""} onClick={() => setLoginMethod("wechat")}>微信扫码</button>
-              <button type="button" role="tab" aria-selected={loginMethod === "account"} className={loginMethod === "account" ? "active" : ""} onClick={() => { clearPolling(); setLoginMethod("account"); }}>账号密码</button>
-            </div>
-          )}
-          {loginMethod === "wechat" ? (
-            <>
-              <div className="qr-frame">
-                {qrUrl ? <img src={qrUrl} alt="云回收管理后台登录小程序码" /> : <div className="qr-placeholder">{loading ? "生成中…" : "暂无登录码"}</div>}
-              </div>
-              <p className="login-message" role="status">{message}</p>
-              {fallbackPath && !qrUrl && <p className="dev-path">开发环境路径：{fallbackPath}</p>}
-              <button className="button secondary full" onClick={() => void createTicket()} disabled={loading}>
-                {loading ? "正在刷新…" : "刷新登录码"}
-              </button>
-            </>
-          ) : (
-            <form className="account-login-form" onSubmit={accountLogin}>
-              <div className="account-login-icon">管</div>
-              <div className="account-login-title"><h2>开发账号登录</h2><p>连接当前配置的真实 CloudBase 环境</p></div>
-              <label><span>账号</span><input autoComplete="username" value={account} onChange={(event) => setAccount(event.target.value)} placeholder="请输入账号" /></label>
-              <label><span>密码</span><input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="请输入密码" /></label>
-              {accountError && <p className="account-error" role="alert">{accountError}</p>}
-              <button className="button primary full" type="submit">登录并读取真实数据</button>
-              <p className="dev-only-note">仅在本地开发模式显示，依赖云函数开发鉴权开关</p>
-            </form>
-          )}
-        </div>
+        <h1 className="login-title">管理员登录</h1>
+        <form className="phone-login-form" onSubmit={verifyAndLogin}>
+          <label><span>手机号</span><input autoComplete="tel" inputMode="numeric" maxLength={11} value={phone} onChange={(event) => setPhone(event.target.value.replace(/\D/g, "").slice(0, 11))} placeholder="请输入 11 位手机号" /></label>
+          <label className="phone-code-row"><span>验证码</span><div className="phone-code-input"><input inputMode="numeric" maxLength={6} value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="短信验证码" /><button type="button" className="button secondary phone-code-btn" disabled={sendingCode || countdown > 0 || !isPhoneValid} onClick={() => void sendCode()}>{sendingCode ? "发送中…" : countdown > 0 ? `${countdown}s 后重发` : "发送验证码"}</button></div></label>
+          <div className="phone-error-slot" aria-live="polite">{phoneError && <p className="phone-error" role="alert">{phoneError}</p>}</div>
+          <button className="button primary full" type="submit" disabled={verifying || sendingCode}>{verifying ? "验证中…" : "登录"}</button>
+        </form>
       </section>
     </main>
   );
@@ -294,7 +312,7 @@ function AdminLayout({ auth, logout, children }: { auth: AuthState; logout: () =
   return (
     <div className="admin-shell">
       <aside className="sidebar">
-        <div className="sidebar-brand"><span className="figma-brand-mark"><RefreshCw size={16} /></span><span><strong>云回收</strong><small>管理后台 v1.0</small></span></div>
+        <div className="sidebar-brand"><span className="figma-brand-mark"><RefreshCw size={16} /></span><span><strong>帮帮回收</strong><small>管理后台 v1.0</small></span></div>
         <nav aria-label="主导航">
           <NavLink to="/orders" className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}><Package size={16} />订单管理<ChevronRight className="nav-chevron" size={13} /></NavLink>
           <span className="nav-item is-disabled" title="人员管理后端接口尚未接入"><Users size={16} />人员管理<small>待接入</small></span>

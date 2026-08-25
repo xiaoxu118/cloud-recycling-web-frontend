@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useMemo, type ReactNode } from "react";
+import { Fragment, useState, useRef, useEffect, useMemo, useCallback, type ReactNode } from "react";
 import {
   Package, Settings, Tags, LogOut, Eye, EyeOff, X, Search,
   ChevronRight, RefreshCw, Plus, Phone, MapPin, User, ImageIcon,
@@ -6,21 +6,22 @@ import {
   Bell, Database, Save, Users, GripVertical, ChevronDown, Check,
   AlarmClock, Lock, SlidersHorizontal, Store, ChevronUp, Columns3,
   Upload, FileSpreadsheet, Download, AlertCircle, Navigation,
-  BarChart2, TrendingUp, CheckCircle2, Coins, ArrowUpRight,
-  type LucideIcon,
+  BarChart2, TrendingUp, CheckCircle2, Coins, ArrowUpRight, Shield, RotateCcw,
+  Menu, Filter, type LucideIcon,
 } from "lucide-react";
 import {
   ResponsiveContainer, ComposedChart, LineChart, Line, BarChart, Bar,
   PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from "recharts";
 import { useLocation, useNavigate } from "react-router-dom";
-import { callCloud } from "../api/cloud";
+import { callCloud, uploadSystemImage, cloudUrlToHttps, cloudUrlsToHttps } from "../api/cloud";
 import type {
+  AdminRecord,
   Category as CloudCategory,
-  CategoryGroup as CloudCategoryGroup,
   Order as CloudOrder,
   OrderListResult,
   OrderStatus as CloudOrderStatus,
+  RecycleSettings,
   StaffRecord,
   SystemSetting,
   UserRecord,
@@ -30,27 +31,38 @@ import type {
 type Page = "orders" | "staff" | "cats" | "analytics" | "system";
 type OrderStatus = "待接单" | "已接单" | "回收中" | "已完成" | "已取消";
 type StaffStatus = "online" | "resting" | "resigned";
+type BusinessOrderType = "recycle" | "furniture_demolition" | "shop_demolition";
 
 interface Staff {
-  id: string; name: string; phone: string; docId?: string; openid?: string;
+  id: string; name: string; phone: string; docId?: string; wechatBound?: boolean;
   status: StaffStatus; joinDate: string; area: string; store: string;
 }
 interface RecycleItem {
   id: string; name: string; unit: string;
   price: string; stationPrice: string;
   fieldEstimate?: boolean; enabled: boolean;
-  categoryId?: string; sortOrder?: number; priceRef?: string;
+  categoryId?: string; parentId?: string | null; sortOrder?: number; priceRef?: string; showOnHome?: boolean;
+  minVisitKg?: number;
+}
+interface CategoryNode extends RecycleItem {
+  parentId: string | null;
+  children: CategoryNode[];
 }
 interface RecycleGroup {
   id: string; name: string; desc: string;
   allowFieldEstimate?: boolean;
-  items: RecycleItem[]; enabled: boolean;
+  items: RecycleItem[]; enabled: boolean; sortOrder?: number;
+}
+interface CategoryRootDraft {
+  _id?: string; name: string; description?: string;
+  sortOrder: number; enabled: boolean; allowFieldEstimate?: boolean;
 }
 interface Order {
   id: string; status: OrderStatus;
   userName: string; phone: string; address: string; description: string;
   appointmentTime: string; images: string[];
-  recyclers: string[]; category: string; weight: string;
+  recyclers: string[]; category: string; categoryNames?: string[]; weight: string;
+  orderType?: BusinessOrderType;
   createdAt: string; completedAt?: string; lastModified: string; amount?: number;
   docId?: string;
   estimatePrice?: number | null; finalWeight?: number | null; finalCount?: number | null;
@@ -88,9 +100,46 @@ const formatCloudTime = (value?: number | null) => {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
 };
 
+type LegacyRecycleSettings = RecycleSettings & {
+  bannerImageFileId?: string;
+  bannerImageUrl?: string;
+};
+
+const legacySettingsToSystemSettings = (settings: LegacyRecycleSettings): SystemSetting[] => [
+  { _id:"virtual:home_banner", key:"home_banner", label:"首页 Banner", type:"image", value:settings.bannerImageFileId||"", imageUrl:settings.bannerImageUrl||"", description:"小程序首页顶部背景图", updateTime:settings.updateTime },
+  { _id:"virtual:service_phone", key:"service_phone", label:"客服电话", type:"text", value:"400-800-1234", description:"首页展示及拨打的客服电话" },
+  { _id:"virtual:map_key", key:"map_key", label:"腾讯地图 Key", type:"text", value:"", description:"腾讯位置服务 WebService Key" },
+  { _id:"virtual:recycle_min_weight_kg", key:"recycle_min_weight_kg", label:"最低起收重量", type:"number", value:String(settings.minWeightKg??5), description:"单位：斤", updateTime:settings.updateTime },
+  { _id:"virtual:recycle_min_count", key:"recycle_min_count", label:"最低起收件数", type:"number", value:String(settings.minCount??0), description:"设置为 0 表示不限制件数", updateTime:settings.updateTime },
+  { _id:"virtual:photo_order_check_min_quantity", key:"photo_order_check_min_quantity", label:"拍照订单校验起收量", type:"boolean", value:String(settings.photoOrderCheckMinQuantity===true), description:"true 开启，false 关闭", updateTime:settings.updateTime },
+  { _id:"virtual:user_agreement", key:"user_agreement", label:"用户协议", type:"longtext" as const, value:"", description:"小程序登录页展示，用户点击《用户协议》弹窗内容" },
+  { _id:"virtual:privacy_policy", key:"privacy_policy", label:"隐私政策", type:"longtext" as const, value:"", description:"小程序登录页展示，用户点击《隐私政策》弹窗内容" },
+  { _id:"virtual:terms_of_service", key:"terms_of_service", label:"服务条款", type:"longtext" as const, value:"", description:"小程序下单页展示，用户点击《帮帮回收上门服务条款》弹窗内容" },
+];
+
+const resolveBusinessOrderType = (order: Pick<CloudOrder,"source"|"orderType"|"demolition">): BusinessOrderType => {
+  if(order.orderType)return order.orderType;
+  if(order.source!=="demolition")return "recycle";
+  return order.demolition?.scene==="business"?"shop_demolition":"furniture_demolition";
+};
+
+const ORDER_TYPE_LABEL: Record<BusinessOrderType,string> = {
+  recycle:"上门回收",
+  furniture_demolition:"家具拆除",
+  shop_demolition:"商铺拆除",
+};
+
+function OrderTypeBadge({type}:{type?:BusinessOrderType}){
+  const resolved=type||"recycle";
+  const tone=resolved==="recycle"?"bg-green-50 text-green-700":resolved==="furniture_demolition"?"bg-amber-50 text-amber-700":"bg-blue-50 text-blue-700";
+  return <span className={`inline-flex whitespace-nowrap rounded-full px-2 py-1 text-xs font-medium ${tone}`}>{ORDER_TYPE_LABEL[resolved]}</span>;
+}
+
 const cloudOrderToFigma = (order: CloudOrder): Order => {
   const address = order.addressSnapshot || {};
-  const itemNames = (order.items || []).map((item) => item.categoryName).filter(Boolean) as string[];
+  const itemNames = order.source==="demolition"
+    ? order.demolition?.items||[]
+    : (order.items || []).map((item) => item.categoryName).filter(Boolean) as string[];
   const quantity = order.finalWeight
     ? `${order.finalWeight}kg`
     : order.finalCount
@@ -104,14 +153,16 @@ const cloudOrderToFigma = (order: CloudOrder): Order => {
     id: order.orderNo,
     docId: order._id,
     status: CLOUD_TO_FIGMA_STATUS[order.status] || "待接单",
+    orderType: resolveBusinessOrderType(order),
     userName: address.contactName || "未填写",
     phone: address.phone || "",
     address: [address.region, address.detail].filter(Boolean).join(" ") || "未填写地址",
     description: order.summary || order.remark || "暂无物品描述",
     appointmentTime: [order.appointDate, order.appointSlot].filter(Boolean).join(" ") || "待确认",
-    images: order.photoUrls || [],
+    images: cloudUrlsToHttps(order.photoUrls || []),
     recyclers: order.recyclerName ? [order.recyclerName] : [],
     category: itemNames.join("、") || (order.source === "photo" ? "拍照提交" : "其他"),
+    categoryNames: itemNames.length ? itemNames : [order.source === "photo" ? "拍照提交" : "其他"],
     weight: quantity,
     createdAt: formatCloudTime(order.createTime),
     completedAt: order.completedAt ? formatCloudTime(order.completedAt) : undefined,
@@ -131,53 +182,103 @@ const priceFromReference = (value?: string) => {
   return match ? Number(match[0]).toFixed(2) : "—";
 };
 
+// 展示层过滤：去掉数据库里可能存在的末尾『起』字（如「1.5 元/斤起」→「1.5 元/斤」）。
+// 与 miniprogram/pages/category/index.js 中的处理一致，让两边看到同样的参考价格。
+const stripTrailingQi = (s?: string) => String(s || "").replace(/起$/, "");
+
 const categoryToItem = (item: CloudCategory): RecycleItem => {
-  const price = priceFromReference(item.priceRef);
+  const priceRef = stripTrailingQi(item.priceRef);
+  const price = priceFromReference(priceRef);
   return {
     id: item._id || item.name,
     categoryId: item._id,
+    parentId: item.parentId || null,
     name: item.name,
     unit: item.unit,
     price,
     stationPrice: "—",
-    priceRef: item.priceRef,
+    priceRef,
     sortOrder: item.sortOrder,
     fieldEstimate: price === "—",
     enabled: item.enabled,
+    showOnHome: !item.parentId && item.showOnHome !== false,
+    minVisitKg: item.minVisitKg,
   };
 };
 
-const categoriesToGroups = (categories: CloudCategory[], savedGroups: CloudCategoryGroup[] = []): RecycleGroup[] => {
-  const groups = savedGroups
-    .slice()
-    .sort((a, b) => a.sortOrder - b.sortOrder)
-    .map((group) => ({
-      id: group._id || group.name,
-      name: group.name,
-      desc: group.description || "暂无分组说明",
-      enabled: group.enabled,
-      allowFieldEstimate: group.allowFieldEstimate,
-      items: categories.filter((item) => item.groupId === group._id).map(categoryToItem),
-    }));
-  const assignedIds = new Set(savedGroups.map((group) => group._id).filter(Boolean));
-  const ungrouped = categories.filter((item) => !item.groupId || !assignedIds.has(item.groupId));
-  if (ungrouped.length || groups.length === 0) {
-    groups.unshift({
-      id: "cloud-categories",
-      name: "回收品类",
-      desc: "尚未分组的可回收品类",
-      enabled: ungrouped.some((item) => item.enabled),
-      allowFieldEstimate: ungrouped.some((item) => !/\d/.test(item.priceRef || "")),
-      items: ungrouped.map(categoryToItem),
-    });
-  }
-  return groups;
+const compareCategoryNodes = (a: CategoryNode, b: CategoryNode) =>
+  (a.sortOrder ?? 0) - (b.sortOrder ?? 0) || a.name.localeCompare(b.name, "zh-CN");
+
+const categoriesToTree = (categories: CloudCategory[]): CategoryNode[] => {
+  const nodes = new Map<string, CategoryNode>();
+  categories.forEach((category) => {
+    const item = categoryToItem(category);
+    nodes.set(item.id, { ...item, parentId: item.parentId || null, children: [] });
+  });
+
+  const roots: CategoryNode[] = [];
+  nodes.forEach((node) => {
+    if (!node.parentId || node.parentId === node.id || !nodes.has(node.parentId)) {
+      roots.push(node);
+      return;
+    }
+    const visited = new Set([node.id]);
+    let parentId: string | null = node.parentId;
+    let cyclic = false;
+    while (parentId) {
+      if (visited.has(parentId)) {
+        cyclic = true;
+        break;
+      }
+      visited.add(parentId);
+      parentId = nodes.get(parentId)?.parentId || null;
+    }
+    if (cyclic) roots.push(node);
+    else nodes.get(node.parentId)?.children.push(node);
+  });
+
+  const sortTree = (items: CategoryNode[]) => {
+    items.sort(compareCategoryNodes);
+    items.forEach((item) => sortTree(item.children));
+  };
+  sortTree(roots);
+  return roots;
+};
+
+const flattenCategoryTree = (nodes: CategoryNode[]): CategoryNode[] =>
+  nodes.flatMap((node) => [node, ...flattenCategoryTree(node.children)]);
+
+const categoryTreeToOrderGroups = (nodes: CategoryNode[]): RecycleGroup[] => nodes.map((node) => {
+  const descendants = flattenCategoryTree(node.children);
+  const items = descendants.length ? descendants : [node];
+  return {
+    id: node.id,
+    name: node.name,
+    desc: "主页展示品类",
+    enabled: node.enabled,
+    sortOrder: node.sortOrder,
+    items,
+  };
+});
+
+const categoriesToGroups = (categories: CloudCategory[]): RecycleGroup[] =>
+  categoryTreeToOrderGroups(categoriesToTree(categories));
+
+const filterCategoryTree = (nodes: CategoryNode[], keyword: string): CategoryNode[] => {
+  const query = keyword.trim().toLowerCase();
+  if (!query) return nodes;
+  return nodes.flatMap((node) => {
+    const children = filterCategoryTree(node.children, query);
+    return node.name.toLowerCase().includes(query) || children.length
+      ? [{ ...node, children }]
+      : [];
+  });
 };
 
 const staffFromCloud = (staff: StaffRecord[]): Staff[] => staff.map((item) => ({
   id: item.employeeNo,
   docId: item._id,
-  openid: item.openid,
+  wechatBound: item.wechatBound,
   name: item.name,
   phone: item.phone,
   status: item.status,
@@ -198,17 +299,17 @@ const INIT_STAFF: Staff[] = [
 
 // Column widths shared across all category group tables for alignment
 const CAT_COL_WIDTHS = [190, 60, 96, 96, 80, 100, 84];
-const CAT_COL_HEADERS = ["品类名称","单位","收购单价","打包站价","差价","差价/收购价","状态"];
+const CAT_COL_HEADERS = ["二级品类","单位","收购单价","打包站价","差价","差价/收购价","状态"];
 
 const INIT_GROUPS: RecycleGroup[] = [
   {
     id: "G1", name: "常见金属", desc: "各类废旧金属回收", enabled: true, allowFieldEstimate: false,
     items: [
-      { id:"G1-1", name:"铜",     unit:"kg",  price:"48.00", stationPrice:"52.00", enabled:true  },
-      { id:"G1-2", name:"铁",     unit:"kg",  price:"2.00",  stationPrice:"2.30",  enabled:true  },
-      { id:"G1-3", name:"钢",     unit:"kg",  price:"2.50",  stationPrice:"2.80",  enabled:true  },
-      { id:"G1-4", name:"铝",     unit:"kg",  price:"12.00", stationPrice:"13.50", enabled:true  },
-      { id:"G1-5", name:"不锈钢", unit:"kg",  price:"6.00",  stationPrice:"6.80",  enabled:false },
+      { id:"G1-1", name:"铜",     unit:"斤",  price:"48.00", stationPrice:"52.00", enabled:true  },
+      { id:"G1-2", name:"铁",     unit:"斤",  price:"2.00",  stationPrice:"2.30",  enabled:true  },
+      { id:"G1-3", name:"钢",     unit:"斤",  price:"2.50",  stationPrice:"2.80",  enabled:true  },
+      { id:"G1-4", name:"铝",     unit:"斤",  price:"12.00", stationPrice:"13.50", enabled:true  },
+      { id:"G1-5", name:"不锈钢", unit:"斤",  price:"6.00",  stationPrice:"6.80",  enabled:false },
     ],
   },
   {
@@ -243,14 +344,14 @@ const INIT_GROUPS: RecycleGroup[] = [
       { id:"G5-1", name:"手机/平板",  unit:"台", price:"—",    stationPrice:"—",    fieldEstimate:true,  enabled:true },
       { id:"G5-2", name:"电脑主机",   unit:"台", price:"—",    stationPrice:"—",    fieldEstimate:true,  enabled:true },
       { id:"G5-3", name:"家用电器",   unit:"台", price:"—",    stationPrice:"—",    fieldEstimate:true,  enabled:true },
-      { id:"G5-4", name:"电线电缆",   unit:"kg", price:"8.00", stationPrice:"9.50", fieldEstimate:false, enabled:true },
+      { id:"G5-4", name:"电线电缆",   unit:"斤", price:"8.00", stationPrice:"9.50", fieldEstimate:false, enabled:true },
     ],
   },
   {
     id: "G6", name: "玻璃", desc: "废旧玻璃制品回收", enabled: false, allowFieldEstimate: false,
     items: [
-      { id:"G6-1", name:"玻璃瓶", unit:"kg", price:"0.30", stationPrice:"0.35", enabled:false },
-      { id:"G6-2", name:"玻璃板", unit:"kg", price:"0.20", stationPrice:"0.25", enabled:false },
+      { id:"G6-1", name:"玻璃瓶", unit:"斤", price:"0.30", stationPrice:"0.35", enabled:false },
+      { id:"G6-2", name:"玻璃板", unit:"斤", price:"0.20", stationPrice:"0.25", enabled:false },
     ],
   },
   {
@@ -260,27 +361,28 @@ const INIT_GROUPS: RecycleGroup[] = [
 ];
 
 const INIT_ORDERS: Order[] = [
-  { id:"202401150001", status:"待接单",  userName:"张明辉", phone:"13800123456", address:"北京市朝阳区望京街道望京SOHO T1楼 2301室",    description:"家里翻新，有废旧铁管和铝合金型材，另有铜线若干，约15公斤。", appointmentTime:"2024-01-15 09:00–11:00", images:["https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=400&h=280&fit=crop","https://images.unsplash.com/photo-1532996122724-e3c354a0b15b?w=400&h=280&fit=crop"], recyclers:["王建国"], category:"常见金属", weight:"约15kg", createdAt:"2024-01-14 16:32", lastModified:"2024-01-14 16:32" },
-  { id:"202401150002", status:"已接单",  userName:"李秀英", phone:"15898765432", address:"上海市浦东新区陆家嘴金融贸易区世纪大道1501号", description:"清理仓库，大量纸箱和书本，约30公斤，方便取走报纸。",           appointmentTime:"2024-01-15 14:00–16:00", images:["https://images.unsplash.com/photo-1604187351574-c75ca79f5807?w=400&h=280&fit=crop"], recyclers:["赵志远","刘铁柱"], category:"纸制品",   weight:"约30kg", createdAt:"2024-01-15 08:10", lastModified:"2024-01-15 09:00" },
-  { id:"202401150003", status:"回收中",  userName:"陈建平", phone:"18600234567", address:"广州市天河区珠江新城花城大道88号",             description:"旧电脑主机2台、显示器1台、键鼠若干，还有一部旧手机。",        appointmentTime:"2024-01-15 10:00–12:00", images:["https://images.unsplash.com/photo-1591193686104-fddba9b544a1?w=400&h=280&fit=crop","https://images.unsplash.com/photo-1542601906990-b4d3fb778b09?w=400&h=280&fit=crop","https://images.unsplash.com/photo-1611273426858-450d8e3c9fce?w=400&h=280&fit=crop"], recyclers:["刘铁柱"], category:"电子废品", weight:"约8kg",  createdAt:"2024-01-15 09:05", lastModified:"2024-01-15 10:30" },
-  { id:"202401140021", status:"已完成",  userName:"王芳",   phone:"13955667788", address:"深圳市南山区科技园科苑路10号",                 description:"家里旧衣物一大袋，还有几箱矿泉水瓶，一起回收。",             appointmentTime:"2024-01-14 15:00–17:00", images:["https://images.unsplash.com/photo-1562077772-3bd90403f7f0?w=400&h=280&fit=crop"], recyclers:["孙大伟"], category:"塑料",     weight:"约22kg", createdAt:"2024-01-14 11:20", completedAt:"2024-01-14 17:10", lastModified:"2024-01-14 17:10", amount:26.40 },
-  { id:"202401130018", status:"已完成",  userName:"周建军", phone:"13612349876", address:"北京市海淀区中关村大街1号",                   description:"废旧铜线一批，电脑主机一台，估计铜线有10公斤。",             appointmentTime:"2024-01-13 10:00–12:00", images:["https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=400&h=280&fit=crop"], recyclers:["王建国","李明"], category:"常见金属", weight:"约10kg", createdAt:"2024-01-12 20:15", completedAt:"2024-01-13 11:45", lastModified:"2024-01-13 11:45", amount:530.00 },
+  { id:"202401150001", status:"待接单",  userName:"张明辉", phone:"13800123456", address:"北京市朝阳区望京街道望京SOHO T1楼 2301室",    description:"家里翻新，有废旧铁管和铝合金型材，另有铜线若干，约15公斤。", appointmentTime:"2024-01-15 09:00–11:00", images:["https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=400&h=280&fit=crop","https://images.unsplash.com/photo-1532996122724-e3c354a0b15b?w=400&h=280&fit=crop"], recyclers:["王建国"], category:"常见金属", weight:"约15斤", createdAt:"2024-01-14 16:32", lastModified:"2024-01-14 16:32" },
+  { id:"202401150002", status:"已接单",  userName:"李秀英", phone:"15898765432", address:"上海市浦东新区陆家嘴金融贸易区世纪大道1501号", description:"清理仓库，大量纸箱和书本，约30公斤，方便取走报纸。",           appointmentTime:"2024-01-15 14:00–16:00", images:["https://images.unsplash.com/photo-1604187351574-c75ca79f5807?w=400&h=280&fit=crop"], recyclers:["赵志远","刘铁柱"], category:"纸制品",   weight:"约30斤", createdAt:"2024-01-15 08:10", lastModified:"2024-01-15 09:00" },
+  { id:"202401150003", status:"回收中",  userName:"陈建平", phone:"18600234567", address:"广州市天河区珠江新城花城大道88号",             description:"旧电脑主机2台、显示器1台、键鼠若干，还有一部旧手机。",        appointmentTime:"2024-01-15 10:00–12:00", images:["https://images.unsplash.com/photo-1591193686104-fddba9b544a1?w=400&h=280&fit=crop","https://images.unsplash.com/photo-1542601906990-b4d3fb778b09?w=400&h=280&fit=crop","https://images.unsplash.com/photo-1611273426858-450d8e3c9fce?w=400&h=280&fit=crop"], recyclers:["刘铁柱"], category:"电子废品", weight:"约8斤",  createdAt:"2024-01-15 09:05", lastModified:"2024-01-15 10:30" },
+  { id:"202401140021", status:"已完成",  userName:"王芳",   phone:"13955667788", address:"深圳市南山区科技园科苑路10号",                 description:"家里旧衣物一大袋，还有几箱矿泉水瓶，一起回收。",             appointmentTime:"2024-01-14 15:00–17:00", images:["https://images.unsplash.com/photo-1562077772-3bd90403f7f0?w=400&h=280&fit=crop"], recyclers:["孙大伟"], category:"塑料",     weight:"约22斤", createdAt:"2024-01-14 11:20", completedAt:"2024-01-14 17:10", lastModified:"2024-01-14 17:10", amount:26.40 },
+  { id:"202401130018", status:"已完成",  userName:"周建军", phone:"13612349876", address:"北京市海淀区中关村大街1号",                   description:"废旧铜线一批，电脑主机一台，估计铜线有10公斤。",             appointmentTime:"2024-01-13 10:00–12:00", images:["https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=400&h=280&fit=crop"], recyclers:["王建国","李明"], category:"常见金属", weight:"约10斤", createdAt:"2024-01-12 20:15", completedAt:"2024-01-13 11:45", lastModified:"2024-01-13 11:45", amount:530.00 },
   { id:"202401140019", status:"已取消",  userName:"刘洋",   phone:"17711223344", address:"成都市武侯区天府大道666号",                   description:"玻璃瓶若干，大约两箱，因搬家需尽快处理。",                   appointmentTime:"2024-01-14 09:00–11:00", images:[], recyclers:[], category:"玻璃",     weight:"—",     createdAt:"2024-01-13 20:44", lastModified:"2024-01-13 20:44" },
-  { id:"202401160004", status:"待接单",  userName:"赵雪梅", phone:"13544332211", address:"杭州市西湖区文三路477号",                     description:"搬家整理出来的旧书和纸箱，约三四十公斤，请尽快上门。",       appointmentTime:"2024-01-16 13:00–15:00", images:["https://images.unsplash.com/photo-1567360425618-1594206637d2?w=400&h=280&fit=crop"], recyclers:[], category:"纸制品",   weight:"约40kg", createdAt:"2024-01-15 21:03", lastModified:"2024-01-15 21:03" },
-  { id:"202401120010", status:"已完成",  userName:"吴晓峰", phone:"13011112222", address:"上海市静安区南京西路1788号",                   description:"旧家电：洗衣机1台、微波炉1台，另有废铁若干。",               appointmentTime:"2024-01-12 14:00–16:00", images:["https://images.unsplash.com/photo-1604187351574-c75ca79f5807?w=400&h=280&fit=crop"], recyclers:["赵志远"], category:"电子废品", weight:"约35kg", createdAt:"2024-01-11 18:30", completedAt:"2024-01-12 15:40", lastModified:"2024-01-12 15:40", amount:90.00 },
+  { id:"202401160004", status:"待接单",  userName:"赵雪梅", phone:"13544332211", address:"杭州市西湖区文三路477号",                     description:"搬家整理出来的旧书和纸箱，约三四十公斤，请尽快上门。",       appointmentTime:"2024-01-16 13:00–15:00", images:["https://images.unsplash.com/photo-1567360425618-1594206637d2?w=400&h=280&fit=crop"], recyclers:[], category:"纸制品",   weight:"约40斤", createdAt:"2024-01-15 21:03", lastModified:"2024-01-15 21:03" },
+  { id:"202401120010", status:"已完成",  userName:"吴晓峰", phone:"13011112222", address:"上海市静安区南京西路1788号",                   description:"旧家电：洗衣机1台、微波炉1台，另有废铁若干。",               appointmentTime:"2024-01-12 14:00–16:00", images:["https://images.unsplash.com/photo-1604187351574-c75ca79f5807?w=400&h=280&fit=crop"], recyclers:["赵志远"], category:"电子废品", weight:"约35斤", createdAt:"2024-01-11 18:30", completedAt:"2024-01-12 15:40", lastModified:"2024-01-12 15:40", amount:90.00 },
 ];
 
 const INIT_COLS: ColDef[] = [
   { id:"id",              label:"订单号",   width:140, minWidth:120, alwaysVisible:true },
-  { id:"status",          label:"状态",     width:88,  minWidth:80  },
+  { id:"status",          label:"状态",     width:100, minWidth:96  },
+  { id:"orderType",       label:"订单类型", width:100, minWidth:92  },
   { id:"contact",         label:"联系人",   width:155, minWidth:130 },
   { id:"address",         label:"地址",     width:175, minWidth:120 },
-  { id:"appointmentTime", label:"预约时间", width:150, minWidth:130 },
+  { id:"appointmentTime", label:"预约时间", width:165, minWidth:145 },
   { id:"images",          label:"图片",     width:118, minWidth:90  },
-  { id:"summary",         label:"物品摘要", width:165, minWidth:120 },
+  { id:"summary",         label:"回收品类", width:230, minWidth:190 },
   { id:"recyclers",       label:"回收人员", width:168, minWidth:120 },
   { id:"lastModified",    label:"最后修改", width:118, minWidth:100 },
-  { id:"actions",         label:"操作",     width:88,  minWidth:76, fixed:true, alwaysVisible:true },
+
 ];
 
 // ─── Shared row action buttons (unified size, page-adaptive layout) ────────────
@@ -378,7 +480,7 @@ function spread(buy:string, station:string) {
 // ─── Status Badges ────────────────────────────────────────────────────────────
 function StatusBadge({ status }:{ status:OrderStatus }) {
   const c=STATUS_CFG[status];
-  return <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${c.color} ${c.bg}`}><span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${c.dot}`}/>{status}</span>;
+  return <span className={`inline-flex whitespace-nowrap items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${c.color} ${c.bg}`}><span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${c.dot}`}/>{status}</span>;
 }
 function StaffBadge({ status }:{ status:StaffStatus }) {
   const c=STAFF_CFG[status];
@@ -730,6 +832,9 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
   const [autoMinutes,setAutoMinutes]=useState(30);
   const [dateFilterType,setDateFilterType]=useState<"appointment"|"completed">("appointment");
   const [dateFrom,setDateFrom]=useState(""); const [dateTo,setDateTo]=useState("");
+  const [mobileFilterOpen,setMobileFilterOpen]=useState(false);
+  const [currentPage,setCurrentPage]=useState(1);
+  const PAGE_SIZE=20;
   const toggleHiddenCol=(id:string)=>setHiddenCols(prev=>{const s=new Set(prev);s.has(id)?s.delete(id):s.add(id);return s;});
 
   // Column resize
@@ -756,7 +861,7 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
   const filtered=orders.filter(o=>{
     if(filterStatus!=="全部"&&o.status!==filterStatus)return false;
     const q=search.toLowerCase();
-    if(q&&!o.id.includes(q)&&!o.userName.includes(q)&&!o.phone.includes(q)&&!o.description.includes(q))return false;
+    if(q&&!o.id.includes(q)&&!o.userName.includes(q)&&!o.phone.includes(q)&&!o.description.includes(q)&&!o.category.includes(q))return false;
     if(dateFrom||dateTo){
       const ds=dateFilterType==="appointment"?o.createdAt:o.completedAt;
       if(!ds)return false;
@@ -767,11 +872,29 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
     return true;
   });
   const totalAmount=filtered.filter(o=>o.status==="已完成").reduce((s,o)=>s+(o.amount??0),0);
+  const totalPages=Math.max(1,Math.ceil(filtered.length/PAGE_SIZE));
+  const safePage=Math.min(currentPage,totalPages);
+  const pagedOrders=filtered.slice((safePage-1)*PAGE_SIZE,safePage*PAGE_SIZE);
+  // Reset to page 1 when filters change
+  const prevFilterKey=useRef("");
+  const filterKey=`${filterStatus}|${search}|${dateFrom}|${dateTo}|${dateFilterType}`;
+  if(filterKey!==prevFilterKey.current){prevFilterKey.current=filterKey;if(currentPage!==1)setCurrentPage(1);}
+  // Build page items: numbers + "..." placeholders
+  function buildPageItems(total:number,cur:number):(number|"...")[]{
+    if(total<=7)return Array.from({length:total},(_,i)=>i+1);
+    const items=new Set<number>([1,total,cur-1,cur,cur+1].filter(p=>p>=1&&p<=total));
+    const sorted=[...items].sort((a,b)=>a-b);
+    const result:(number|"...")[]=[];
+    sorted.forEach((p,i)=>{if(i>0&&p-sorted[i-1]>1)result.push("...");result.push(p);});
+    return result;
+  }
+  const pageItems=buildPageItems(totalPages,safePage);
 
   function renderCell(col:ColDef,order:Order){
     switch(col.id){
       case "id": return <span className="font-mono text-xs text-gray-600 tracking-wide">{order.id}</span>;
       case "status": return <StatusBadge status={order.status}/>;
+      case "orderType": return <OrderTypeBadge type={order.orderType}/>;
       case "contact":{
         return(
           <div className="flex items-center gap-1.5">
@@ -791,7 +914,23 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
           </a>
         </div>
       );
-      case "summary": return <span className="text-xs text-gray-500 block truncate" title={order.description}>{order.description||"—"}</span>;
+      case "summary":{
+        const categoryNames=(order.categoryNames?.length
+          ? order.categoryNames
+          : order.category.split(/[、,，]/).map((item)=>item.trim()).filter(Boolean));
+        const visibleCategoryNames=categoryNames.slice(0,3);
+        return (
+          <div className="flex items-center gap-1.5 min-w-0" title={categoryNames.join("、")}>
+            {visibleCategoryNames.map((name,index)=>(
+              <span key={`${name}-${index}`} className="inline-block max-w-[68px] truncate rounded-md bg-green-50 px-2 py-1 text-xs font-medium text-green-700">
+                {name}
+              </span>
+            ))}
+            {categoryNames.length>3&&<span className="flex-shrink-0 text-xs font-medium text-gray-400">+{categoryNames.length-3}</span>}
+            {categoryNames.length===0&&<span className="text-xs text-gray-300">—</span>}
+          </div>
+        );
+      }
       case "appointmentTime": return <span className="text-xs text-gray-600 whitespace-nowrap">{order.appointmentTime}</span>;
       case "images": return order.images.length===0?<span className="text-xs text-gray-300">暂无</span>:(
         <div className="flex -space-x-1">
@@ -803,12 +942,6 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
         ? <RecyclerPills recyclers={order.recyclers} staff={staff}/>
         : <button type="button" onClick={()=>setAssigningOrder(order)} className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-green-200 bg-green-50 text-xs font-medium text-green-700 hover:bg-green-100"><User size={11}/>分配人员</button>;
       case "lastModified": return <span className="text-xs text-gray-400 font-mono">{order.lastModified}</span>;
-      case "actions": return(
-        <RowActions layout="stack">
-          <RowActionButton tone="green" icon={Eye} onClick={()=>order.docId&&onViewOrder(order.docId)}>详情</RowActionButton>
-          <RowActionButton tone="blue" icon={Edit2} onClick={()=>setEditOrder(order)}>修改</RowActionButton>
-        </RowActions>
-      );
       default: return null;
     }
   }
@@ -821,14 +954,11 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div><h1 className="text-xl font-semibold text-gray-900">订单管理</h1><p className="text-xs text-gray-400 mt-0.5">拖动列标题调整顺序 · 拖动右边框调整宽度</p></div>
         <div className="flex items-center gap-2 flex-wrap">
-          {autoEnabled&&<span className="flex items-center gap-1.5 text-xs text-green-700 bg-green-50 border border-green-200 px-3 py-1.5 rounded-lg font-medium"><span className="w-2 h-2 rounded-full bg-green-500 animate-pulse"/>自动接单已开启 · {autoMinutes}分钟</span>}
-          <button onClick={()=>setShowAutoModal(true)} className={`flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium border transition-all ${autoEnabled?"border-green-400 text-green-700 bg-green-50":"border-gray-200 text-gray-600 hover:border-gray-300"}`}><AlarmClock size={14}/>超时自动接单</button>
-          <button onClick={()=>setShowNew(true)} className="flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm font-medium text-white hover:opacity-90 transition-all" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}><Plus size={14}/>新建订单</button>
         </div>
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-6 gap-3">
+      <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
         {(["待接单","已接单","回收中","已完成","已取消"] as OrderStatus[]).map(s=>{
           const cnt=filtered.filter(o=>o.status===s).length;
           const cfg=STATUS_CFG[s];
@@ -842,7 +972,7 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
       </div>
 
       {/* Filters */}
-      <div className="bg-white rounded-xl p-4 space-y-3">
+      <div className="hidden md:block bg-white rounded-xl p-4 space-y-3">
         <div className="flex flex-wrap items-center gap-3">
           <div className="relative flex-1 min-w-[200px]">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/>
@@ -867,8 +997,67 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
         </div>
       </div>
 
-      {/* Table */}
-      <div className="bg-white rounded-xl overflow-hidden border border-gray-100">
+      {/* Mobile Filter Toggle */}
+      <div className="md:hidden">
+        <button onClick={()=>setMobileFilterOpen(v=>!v)} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium border transition-all ${mobileFilterOpen||search||filterStatus!=="全部"||dateFrom||dateTo?"border-green-400 text-green-700 bg-green-50":"border-gray-200 text-gray-600 bg-white"}`}>
+          <Filter size={14}/>
+          <span>筛选</span>
+          {(search||filterStatus!=="全部"||dateFrom||dateTo)&&<span className="ml-auto flex items-center justify-center w-5 h-5 rounded-full bg-green-600 text-white text-[10px] font-bold">!</span>}
+        </button>
+        {mobileFilterOpen&&(
+          <div className="mt-2 bg-white rounded-xl p-4 space-y-3 border border-gray-100">
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/>
+              <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="搜索订单号、用户名、电话…" className="w-full pl-9 pr-4 py-2.5 rounded-lg border border-gray-200 text-sm outline-none focus:border-green-400 transition-all"/>
+            </div>
+            <div className="flex gap-1.5 flex-wrap">
+              {statuses.map(s=>(<button key={s} onClick={()=>setFilterStatus(s)} className={`px-3 py-2 rounded-lg text-xs font-medium transition-all ${filterStatus===s?"bg-green-600 text-white":"bg-gray-100 text-gray-500"}`}>{s}</button>))}
+            </div>
+            <div className="pt-2 border-t border-gray-50 space-y-2">
+              <div className="flex gap-1.5">
+                {([{v:"appointment" as const,l:"预约时间"},{v:"completed" as const,l:"完成时间"}]).map(opt=>(<button key={opt.v} onClick={()=>setDateFilterType(opt.v)} className={`flex-1 px-3 py-2 rounded-lg text-xs font-medium transition-all ${dateFilterType===opt.v?"bg-green-600 text-white":"bg-gray-100 text-gray-500"}`}>{opt.l}</button>))}
+              </div>
+              <div className="flex items-center gap-2">
+                <input type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} className="flex-1 px-3 py-2 rounded-lg border border-gray-200 text-xs outline-none focus:border-green-400 transition-all"/>
+                <span className="text-xs text-gray-400">至</span>
+                <input type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)} className="flex-1 px-3 py-2 rounded-lg border border-gray-200 text-xs outline-none focus:border-green-400 transition-all"/>
+              </div>
+              {(dateFrom||dateTo)&&<button onClick={()=>{setDateFrom("");setDateTo("");}} className="w-full text-center text-xs text-red-500 py-1.5 rounded-lg bg-red-50">清除日期筛选</button>}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Mobile Card List */}
+      <div className="md:hidden space-y-3">
+        {pagedOrders.length===0?<div className="bg-white rounded-xl p-8 text-center text-sm text-gray-400 border border-gray-100">暂无符合条件的订单</div>:pagedOrders.map(order=>{
+          const cfg=STATUS_CFG[order.status];
+          return(<button key={order.id} onClick={()=>order.docId&&onViewOrder(order.docId)} className="w-full bg-white rounded-xl p-4 border border-gray-100 text-left active:bg-gray-50 transition-colors">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-mono text-gray-400 mr-2 break-all">{order.id}</span>
+              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${cfg.bg} ${cfg.color}`}><span className={`w-1.5 h-1.5 rounded-full ${cfg.dot}`}/>{order.status}</span>
+            </div>
+            <p className="text-sm font-medium text-gray-800 truncate mb-1">{order.userName||"用户"} · {order.phone||"—"}</p>
+            <p className="text-xs text-gray-500 truncate mb-2">{order.description||order.category||"无描述"}</p>
+            <div className="flex items-center justify-between text-xs">
+              <span className="text-gray-400">{order.appointmentTime||"未预约"}</span>
+              {order.amount!=null&&<span className="font-semibold text-green-700">¥{Number(order.amount).toFixed(2)}</span>}
+            </div>
+          </button>);
+        })}
+        <div className="flex items-center justify-between py-2">
+          <span className="text-xs text-gray-400">{filtered.length} 条</span>
+          <div className="flex items-center gap-1">
+            <button disabled={safePage<=1} onClick={()=>setCurrentPage(p=>Math.max(1,p-1))} className="w-7 h-7 rounded-lg text-xs font-medium flex items-center justify-center border border-gray-200 text-gray-500 disabled:opacity-30 disabled:cursor-not-allowed">‹</button>
+            {pageItems.map((item,idx)=>item==="..."?<span key={`e${idx}`} className="w-5 text-center text-xs text-gray-400">…</span>:<button key={item} onClick={()=>setCurrentPage(item as number)} className={`w-7 h-7 rounded-lg text-xs font-medium transition-all ${item===safePage?"bg-green-600 text-white":"text-gray-500 hover:bg-gray-100"}`}>{item}</button>)}
+            <button disabled={safePage>=totalPages} onClick={()=>setCurrentPage(p=>Math.min(totalPages,p+1))} className="w-7 h-7 rounded-lg text-xs font-medium flex items-center justify-center border border-gray-200 text-gray-500 disabled:opacity-30 disabled:cursor-not-allowed">›</button>
+          </div>
+          <span className="text-xs text-gray-400">{safePage}/{totalPages}</span>
+        </div>
+      </div>
+
+      {/* Desktop Table */}
+      <div className="hidden md:block bg-white rounded-xl overflow-hidden border border-gray-100">
         <div className="overflow-x-auto">
           <table style={{tableLayout:"fixed",width:totalW,minWidth:"100%"}}>
             <colgroup>{visibleCols.map(c=><col key={c.id} style={{width:c.width}}/>)}</colgroup>
@@ -893,22 +1082,26 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
               </tr>
             </thead>
             <tbody>
-              {filtered.map((order,i)=>(
+              {pagedOrders.map((order,i)=>(
                 <tr key={order.id} tabIndex={0} onClick={()=>order.docId&&onViewOrder(order.docId)} onKeyDown={event=>{if((event.key==="Enter"||event.key===" ")&&order.docId){event.preventDefault();onViewOrder(order.docId);}}} className={`border-b border-gray-50 hover:bg-green-50/40 transition-colors cursor-pointer focus:outline-none focus:bg-green-50/60 ${i%2===1?"bg-gray-50/20":""}`}>
                   {visibleCols.map((col)=>(
-                    <td key={col.id} onClick={col.id==="actions"||col.id==="images"||col.id==="recyclers"?event=>event.stopPropagation():undefined} className="px-4 py-3" style={{width:col.width,maxWidth:col.width,overflow:"hidden"}}>
+                    <td key={col.id} onClick={col.id==="images"||col.id==="recyclers"?event=>event.stopPropagation():undefined} className={`py-3 ${col.id==="summary"?"pl-6 pr-4 border-l border-gray-100":"px-4"}`} style={{width:col.width,maxWidth:col.width,overflow:"hidden"}}>
                       {renderCell(col,order)}
                     </td>
                   ))}
                 </tr>
               ))}
-              {filtered.length===0&&<tr><td colSpan={visibleCols.length} className="px-4 py-12 text-center text-gray-300 text-sm">暂无符合条件的订单</td></tr>}
+              {pagedOrders.length===0&&<tr><td colSpan={visibleCols.length} className="px-4 py-12 text-center text-gray-300 text-sm">暂无符合条件的订单</td></tr>}
             </tbody>
           </table>
         </div>
         <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-between">
-          <span className="text-xs text-gray-400">显示 {filtered.length} / {orders.length} 条</span>
-          <div className="flex gap-1">{[1,2,3].map(n=>(<button key={n} className={`w-7 h-7 rounded-lg text-xs font-medium transition-all ${n===1?"bg-green-600 text-white":"text-gray-500 hover:bg-gray-100"}`}>{n}</button>))}</div>
+          <span className="text-xs text-gray-400">显示 {pagedOrders.length} / {filtered.length} 条</span>
+          <div className="flex items-center gap-1">
+            <button disabled={safePage<=1} onClick={()=>setCurrentPage(p=>Math.max(1,p-1))} className="w-7 h-7 rounded-lg text-xs font-medium flex items-center justify-center border border-gray-200 text-gray-500 disabled:opacity-30 disabled:cursor-not-allowed">‹</button>
+            {pageItems.map((item,idx)=>item==="..."?<span key={`de${idx}`} className="w-5 text-center text-xs text-gray-400">…</span>:<button key={item} onClick={()=>setCurrentPage(item as number)} className={`w-7 h-7 rounded-lg text-xs font-medium transition-all ${item===safePage?"bg-green-600 text-white":"text-gray-500 hover:bg-gray-100"}`}>{item}</button>)}
+            <button disabled={safePage>=totalPages} onClick={()=>setCurrentPage(p=>Math.min(totalPages,p+1))} className="w-7 h-7 rounded-lg text-xs font-medium flex items-center justify-center border border-gray-200 text-gray-500 disabled:opacity-30 disabled:cursor-not-allowed">›</button>
+          </div>
         </div>
       </div>
 
@@ -922,17 +1115,19 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
 }
 
 // ─── Staff Page ───────────────────────────────────────────────────────────────
-function StaffPage({ staff,users,onSaveStaff }:{ staff:Staff[];users:UserRecord[];onSaveStaff:(staff:Staff)=>Promise<void> }) {
-  const [tab,setTab]=useState<"users"|"staff">("users");
+function StaffPage({ staff,users,admins,onSaveStaff,onSaveAdmin,onToggleAdmin,onViewUser }:{ staff:Staff[];users:UserRecord[];admins:AdminRecord[];onSaveStaff:(staff:Staff)=>Promise<void>;onSaveAdmin:(admin:AdminRecord)=>Promise<void>;onToggleAdmin:(admin:AdminRecord,enabled:boolean)=>Promise<void>;onViewUser?:(id:string)=>void }) {
+  const [tab,setTab]=useState<"users"|"staff"|"admins">("users");
   const [editing,setEditing]=useState<Staff|null|undefined>(undefined);
+  const adminAddRef=useRef<()=>void>(null);
   const counts={online:staff.filter(s=>s.status==="online").length,resting:staff.filter(s=>s.status==="resting").length,resigned:staff.filter(s=>s.status==="resigned").length};
   return(
     <div className="p-6 space-y-5">
       <div className="flex items-center justify-between">
-        <div><h1 className="text-xl font-semibold text-gray-900">人员管理</h1><p className="text-sm text-gray-400 mt-0.5">用户和工作人员均来自云数据库</p></div>
+        <div><h1 className="text-xl font-semibold text-gray-900">人员管理</h1></div>
         {tab==="staff"&&<button onClick={()=>setEditing(null)} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white hover:opacity-90 transition-all" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}><Plus size={14}/>添加工作人员</button>}
+        {tab==="admins"&&<button onClick={()=>adminAddRef.current?.()} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white hover:opacity-90 transition-all" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}><Plus size={14}/>添加管理员</button>}
       </div>
-      <div className="flex gap-2 border-b border-gray-200"><button onClick={()=>setTab("users")} className={`px-4 py-2 text-sm font-medium border-b-2 ${tab==="users"?"border-green-600 text-green-700":"border-transparent text-gray-400"}`}>用户（{users.length}）</button><button onClick={()=>setTab("staff")} className={`px-4 py-2 text-sm font-medium border-b-2 ${tab==="staff"?"border-green-600 text-green-700":"border-transparent text-gray-400"}`}>工作人员（{staff.length}）</button></div>
+      <div className="flex gap-2 border-b border-gray-200"><button onClick={()=>setTab("users")} className={`px-4 py-2 text-sm font-medium border-b-2 ${tab==="users"?"border-green-600 text-green-700":"border-transparent text-gray-400"}`}>用户（{users.length}）</button><button onClick={()=>setTab("staff")} className={`px-4 py-2 text-sm font-medium border-b-2 ${tab==="staff"?"border-green-600 text-green-700":"border-transparent text-gray-400"}`}>工作人员（{staff.length}）</button><button onClick={()=>setTab("admins")} className={`px-4 py-2 text-sm font-medium border-b-2 ${tab==="admins"?"border-green-600 text-green-700":"border-transparent text-gray-400"}`}>管理员（{admins.length}）</button></div>
       {tab==="staff"&&<div className="grid grid-cols-3 gap-3">
         {[{label:"在线（可接单）",val:counts.online,color:"text-green-600"},{label:"休息（暂停接单）",val:counts.resting,color:"text-amber-600"},{label:"离职",val:counts.resigned,color:"text-gray-400"}].map(item=>(
           <div key={item.label} className="bg-white rounded-xl p-4 border border-transparent">
@@ -940,7 +1135,59 @@ function StaffPage({ staff,users,onSaveStaff }:{ staff:Staff[];users:UserRecord[
           </div>
         ))}
       </div>}
-      {tab==="users"?<div className="bg-white rounded-xl overflow-hidden border border-gray-100"><table className="w-full"><thead><tr className="bg-gray-50 border-b border-gray-100">{["用户","联系电话","OpenID","订单数","地址数","最近活跃"].map(h=><th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-500">{h}</th>)}</tr></thead><tbody>{users.map(user=><tr key={user._id} className="border-b border-gray-50"><td className="px-4 py-3"><div className="flex items-center gap-2">{user.avatarUrl?<img src={user.avatarUrl} className="w-8 h-8 rounded-full"/>:<div className="w-8 h-8 rounded-full bg-green-100 text-green-700 flex items-center justify-center"><User size={14}/></div>}<span className="text-sm font-medium">{user.nickName||"微信用户"}</span></div></td><td className="px-4 py-3 text-xs font-mono">{user.phone||"—"}</td><td className="px-4 py-3 text-xs font-mono text-gray-400 max-w-48 truncate">{user.openid}</td><td className="px-4 py-3 text-sm">{user.orderCount}</td><td className="px-4 py-3 text-sm">{user.addressCount}</td><td className="px-4 py-3 text-xs text-gray-500">{formatCloudTime(user.lastLoginTime||user.updateTime)}</td></tr>)}{users.length===0&&<tr><td colSpan={6} className="px-6 py-16 text-center text-sm text-gray-400">暂无已同步的小程序用户</td></tr>}</tbody></table></div>:<div className="bg-white rounded-xl overflow-hidden border border-gray-100">
+      {tab==="users"?<>
+        {/* Mobile User Cards */}
+        <div className="md:hidden space-y-3">
+          {users.length===0?<div className="bg-white rounded-xl p-8 text-center text-sm text-gray-400 border border-gray-100">暂无已同步的小程序用户</div>:users.map(user=>(
+            <div key={user._id} onClick={()=>onViewUser?.(user._id)} className="bg-white rounded-xl p-4 border border-gray-100 cursor-pointer hover:border-green-200 active:bg-gray-50 transition-colors">
+              <div className="flex items-center gap-3 mb-3">
+                {user.avatarUrl?<img src={cloudUrlToHttps(user.avatarUrl)} className="w-10 h-10 rounded-full"/>:<div className="w-10 h-10 rounded-full bg-green-100 text-green-700 flex items-center justify-center"><User size={16}/></div>}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-800 truncate">{user.nickName||"微信用户"}</p>
+                  <p className="text-xs font-mono text-gray-500">{user.phone||"未绑定手机"}</p>
+                </div>
+                <span className={`inline-flex rounded-full px-2 py-0.5 text-xs ${user.wechatBound?"bg-green-50 text-green-700":"bg-gray-100 text-gray-500"}`}>{user.wechatBound?"已绑定":"未绑定"}</span>
+              </div>
+              <div className="flex items-center justify-between text-xs text-gray-500 pt-2 border-t border-gray-50">
+                <span>订单 {user.orderCount}</span>
+                <span>地址 {user.addressCount}</span>
+                <span>{formatCloudTime(user.lastLoginTime||user.updateTime)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+        {/* Desktop User Table */}
+        <div className="hidden md:block bg-white rounded-xl overflow-hidden border border-gray-100"><table className="w-full"><thead><tr className="bg-gray-50 border-b border-gray-100">{["用户","联系电话","微信状态","订单数","地址数","最近活跃"].map(h=><th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-500">{h}</th>)}</tr></thead><tbody>{users.map(user=><tr key={user._id} onClick={()=>onViewUser?.(user._id)} className="border-b border-gray-50 cursor-pointer hover:bg-gray-50 transition-colors"><td className="px-4 py-3"><div className="flex items-center gap-2">{user.avatarUrl?<img src={cloudUrlToHttps(user.avatarUrl)} className="w-8 h-8 rounded-full"/>:<div className="w-8 h-8 rounded-full bg-green-100 text-green-700 flex items-center justify-center"><User size={14}/></div>}<span className="text-sm font-medium">{user.nickName||"微信用户"}</span></div></td><td className="px-4 py-3 text-xs font-mono">{user.phone||"—"}</td><td className="px-4 py-3"><span className={`inline-flex rounded-full px-2 py-1 text-xs ${user.wechatBound?"bg-green-50 text-green-700":"bg-gray-100 text-gray-500"}`}>{user.wechatBound?"已绑定":"未绑定"}</span></td><td className="px-4 py-3 text-sm">{user.orderCount}</td><td className="px-4 py-3 text-sm">{user.addressCount}</td><td className="px-4 py-3 text-xs text-gray-500">{formatCloudTime(user.lastLoginTime||user.updateTime)}</td></tr>)}{users.length===0&&<tr><td colSpan={6} className="px-6 py-16 text-center text-sm text-gray-400">暂无已同步的小程序用户</td></tr>}</tbody></table></div>
+      </>:tab==="staff"?<>
+        {/* Mobile Staff Cards */}
+        <div className="md:hidden space-y-3">
+          {staff.length===0?<div className="bg-white rounded-xl p-8 text-center text-sm text-gray-400 border border-gray-100">暂无工作人员数据</div>:staff.map(s=>(
+            <div key={s.id} className="bg-white rounded-xl p-4 border border-gray-100">
+              <div className="flex items-center gap-3 mb-3">
+                <div className={`w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 text-white text-sm font-bold ${s.status==="online"?"":"opacity-40"}`} style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}>{s.name[0]}</div>
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-800">{s.name}</p>
+                  <p className="text-xs font-mono text-gray-500">{s.phone||"—"}</p>
+                </div>
+                <button onClick={()=>void onSaveStaff({...s,status:STAFF_CFG[s.status].next})}><StaffBadge status={s.status}/></button>
+              </div>
+              <div className="flex items-center gap-2 text-xs text-gray-500 mb-2">
+                <Store size={12} className="text-gray-400"/><span>{s.store}</span>
+                <span className="text-gray-300">·</span>
+                <span>{s.area}</span>
+              </div>
+              <div className="flex items-center justify-between pt-2 border-t border-gray-50">
+                <span className="text-xs text-gray-400">入职 {s.joinDate}</span>
+                <div className="flex gap-2">
+                  <button onClick={()=>setEditing(s)} className="px-3 py-1.5 rounded-lg text-xs font-medium text-blue-600 bg-blue-50">编辑</button>
+                  <button onClick={()=>void onSaveStaff({...s,status:"resigned"})} className="px-3 py-1.5 rounded-lg text-xs font-medium text-red-500 bg-red-50">停用</button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+        {/* Desktop Staff Table */}
+        <div className="hidden md:block bg-white rounded-xl overflow-hidden border border-gray-100">
         <table className="w-full">
           <thead>
             <tr className="bg-gray-50 border-b border-gray-100">
@@ -971,7 +1218,7 @@ function StaffPage({ staff,users,onSaveStaff }:{ staff:Staff[];users:UserRecord[
                 <td className="px-4 py-3 border-r border-gray-50"><span className="text-xs font-mono text-gray-500">{s.joinDate}</span></td>
                 <td className="px-4 py-3 border-r border-gray-50"><button onClick={()=>void onSaveStaff({...s,status:STAFF_CFG[s.status].next})} title="点击切换状态"><StaffBadge status={s.status}/></button></td>
                 <td className="px-4 py-3 border-r border-gray-50">
-                  <span className="text-xs text-gray-400">工作人员</span>
+                  <span className={`inline-flex rounded-full px-2 py-1 text-xs ${s.wechatBound?"bg-green-50 text-green-700":"bg-gray-100 text-gray-500"}`}>{s.wechatBound?"微信已绑定":"微信未绑定"}</span>
                 </td>
                 <td className="px-4 py-3">
                   <RowActions layout="stack">
@@ -984,7 +1231,8 @@ function StaffPage({ staff,users,onSaveStaff }:{ staff:Staff[];users:UserRecord[
             {staff.length===0&&<tr><td colSpan={9} className="px-6 py-16 text-center"><Users size={32} className="mx-auto text-gray-200 mb-3"/><p className="text-sm text-gray-400">暂无工作人员数据</p></td></tr>}
           </tbody>
         </table>
-      </div>}
+      </div>
+      </>:<AdminListView admins={admins} onSaveAdmin={onSaveAdmin} onToggleAdmin={onToggleAdmin} addRef={adminAddRef}/>}
       {editing!==undefined&&<StaffEditor initial={editing} onClose={()=>setEditing(undefined)} onSave={async(value)=>{await onSaveStaff(value);setEditing(undefined);}}/>}
     </div>
   );
@@ -994,11 +1242,119 @@ function StaffEditor({initial,onClose,onSave}:{initial:Staff|null;onClose:()=>vo
   const [form,setForm]=useState<Staff>(initial||{id:"",name:"",phone:"",status:"resting",joinDate:"",area:"",store:""});
   const [saving,setSaving]=useState(false);
   const save=async()=>{if(!form.name.trim()||!form.phone.trim())return;setSaving(true);try{await onSave(form);}finally{setSaving(false);}};
-  return <div className="fixed inset-0 z-50 flex items-center justify-center"><button className="absolute inset-0 bg-black/40" onClick={onClose}/><div className="relative bg-white rounded-2xl shadow-xl w-full max-w-lg p-6 space-y-4"><div className="flex justify-between"><h2 className="font-semibold">{initial?"编辑工作人员":"添加工作人员"}</h2><button onClick={onClose}><X size={18}/></button></div><div className="grid grid-cols-2 gap-3">{[{k:"name",l:"姓名 *"},{k:"phone",l:"联系电话 *"},{k:"id",l:"工号"},{k:"openid",l:"微信 OpenID"},{k:"area",l:"服务区域"},{k:"store",l:"所属门店"},{k:"joinDate",l:"入职日期"}].map(item=><label key={item.k} className={item.k==="openid"?"col-span-2":""}><span className="text-xs text-gray-500">{item.l}</span><input value={String(form[item.k as keyof Staff]||"")} onChange={e=>setForm({...form,[item.k]:e.target.value})} className="mt-1 w-full px-3 py-2 border rounded-lg text-sm"/></label>)}</div><label><span className="text-xs text-gray-500">状态</span><select value={form.status} onChange={e=>setForm({...form,status:e.target.value as StaffStatus})} className="mt-1 w-full px-3 py-2 border rounded-lg text-sm"><option value="online">在线</option><option value="resting">休息</option><option value="resigned">离职</option></select></label><div className="flex justify-end gap-2"><button onClick={onClose} className="px-4 py-2 text-sm">取消</button><button disabled={saving||!form.name.trim()||!form.phone.trim()} onClick={()=>void save()} className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm disabled:opacity-40">{saving?"保存中…":"保存"}</button></div></div></div>;
+  return <div className="fixed inset-0 z-50 flex items-center justify-center"><button className="absolute inset-0 bg-black/40" onClick={onClose}/><div className="relative bg-white rounded-2xl shadow-xl w-full max-w-lg p-6 space-y-4"><div className="flex justify-between"><h2 className="font-semibold">{initial?"编辑工作人员":"添加工作人员"}</h2><button onClick={onClose}><X size={18}/></button></div><div className="grid grid-cols-2 gap-3">{[{k:"name",l:"姓名 *"},{k:"phone",l:"联系电话 *"},{k:"id",l:"工号"},{k:"area",l:"服务区域"},{k:"store",l:"所属门店"},{k:"joinDate",l:"入职日期"}].map(item=><label key={item.k}><span className="text-xs text-gray-500">{item.l}</span><input value={String(form[item.k as keyof Staff]||"")} onChange={e=>setForm({...form,[item.k]:e.target.value})} className="mt-1 w-full px-3 py-2 border rounded-lg text-sm"/></label>)}</div><label><span className="text-xs text-gray-500">状态</span><select value={form.status} onChange={e=>setForm({...form,status:e.target.value as StaffStatus})} className="mt-1 w-full px-3 py-2 border rounded-lg text-sm"><option value="online">在线</option><option value="resting">休息</option><option value="resigned">离职</option></select></label><div className="flex justify-end gap-2"><button onClick={onClose} className="px-4 py-2 text-sm">取消</button><button disabled={saving||!form.name.trim()||!form.phone.trim()} onClick={()=>void save()} className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm disabled:opacity-40">{saving?"保存中…":"保存"}</button></div></div></div>;
 }
 
-function CategoryGroupModal({index,onSave,onClose}:{index:number;onSave:(group:CloudCategoryGroup)=>Promise<void>;onClose:()=>void}) {
-  const [form,setForm]=useState<CloudCategoryGroup>({name:"",description:"",sortOrder:index,enabled:true,allowFieldEstimate:false});
+// “管理员” tab 下的列表 + 编辑/新增/启用停用。
+// - 行点击：进入编辑模式（手机号不允许修改）。
+// - 启用状态列：点击切换（停用时由云函数做 “最后一个启用的管理员” 保护）。
+// - 顶部按钮：新增（手机号为唯一必填项）。
+function AdminListView({ admins,onSaveAdmin,onToggleAdmin,addRef }:{ admins:AdminRecord[];onSaveAdmin:(admin:AdminRecord)=>Promise<void>;onToggleAdmin:(admin:AdminRecord,enabled:boolean)=>Promise<void>;addRef?:React.MutableRefObject<(()=>void)|null> }) {
+  const [editing,setEditing]=useState<AdminRecord|null|undefined>(undefined);
+  useEffect(()=>{if(addRef)addRef.current=()=>setEditing(null);},[addRef]);
+  return (
+    <>
+      {/* Mobile Admin Cards */}
+      <div className="md:hidden space-y-3">
+        {admins.length===0?<div className="bg-white rounded-xl p-8 text-center border border-gray-100"><Shield size={32} className="mx-auto text-gray-200 mb-3"/><p className="text-sm text-gray-400">还没有管理员</p></div>:admins.map(a=>(
+          <div key={a._id} onClick={()=>setEditing(a)} className="bg-white rounded-xl p-4 border border-gray-100 active:bg-gray-50 transition-colors">
+            <div className="flex items-center gap-3 mb-3">
+              <div className="w-10 h-10 rounded-full bg-green-100 text-green-700 flex items-center justify-center flex-shrink-0 text-sm font-bold">{(a.name||a.phone).slice(0,1)}</div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-gray-800">{a.name||"未命名"}</p>
+                <p className="text-xs font-mono text-gray-500">{a.phone}</p>
+              </div>
+              <span className={`inline-flex rounded-full px-2 py-0.5 text-xs ${a.enabled?"bg-green-50 text-green-700":"bg-gray-100 text-gray-500"}`}>{a.enabled?"已启用":"已停用"}</span>
+            </div>
+            <div className="flex items-center justify-between text-xs text-gray-500 pt-2 border-t border-gray-50">
+              <span className="inline-flex rounded-full px-2 py-0.5 bg-gray-100 text-gray-600">{a.role}</span>
+              <span>{a.loginMethod==="phone"?"手机绑定":a.loginMethod==="wechat"?"微信绑定":"未登录"}</span>
+              <span>{formatCloudTime(a.updateTime)}</span>
+            </div>
+          </div>
+        ))}
+      </div>
+      {/* Desktop Admin Table */}
+      <div className="hidden md:block bg-white rounded-xl overflow-hidden border border-gray-100">
+      <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+        <p className="text-xs text-gray-500">点击行可编辑，手机号是唯一标识且不可修改</p>
+        <button onClick={()=>setEditing(null)} className="flex items-center gap-2 px-3 py-1.5 rounded-lg text-xs font-medium text-white hover:opacity-90 transition-all" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}><Plus size={12}/>添加管理员</button>
+      </div>
+      <table className="w-full">
+        <thead>
+          <tr className="bg-gray-50 border-b border-gray-100">
+            {["手机号","姓名","角色","登录方式","启用状态","创建时间","更新时间"].map((h) => (
+              <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-500 border-r border-gray-200 last:border-0">{h}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {admins.map((a, i) => (
+            <tr key={a._id} onClick={()=>setEditing(a)} className={`border-b border-gray-50 hover:bg-green-50/30 cursor-pointer transition-colors ${i % 2 === 1 ? "bg-gray-50/20" : ""}`}>
+              <td className="px-4 py-3 border-r border-gray-50"><span className="font-mono text-xs text-gray-700">{a.phone}</span></td>
+              <td className="px-4 py-3 border-r border-gray-50"><span className="text-sm font-medium text-gray-800">{a.name || "—"}</span></td>
+              <td className="px-4 py-3 border-r border-gray-50"><span className="inline-flex rounded-full px-2 py-1 text-xs bg-gray-100 text-gray-600">{a.role}</span></td>
+              <td className="px-4 py-3 border-r border-gray-50">
+                {a.loginMethod === "phone" ? <span className="inline-flex rounded-full px-2 py-1 text-xs bg-green-50 text-green-700">手机号已绑定</span>
+                  : a.loginMethod === "wechat" ? <span className="inline-flex rounded-full px-2 py-1 text-xs bg-green-50 text-green-700">微信已绑定</span>
+                  : <span className="inline-flex rounded-full px-2 py-1 text-xs bg-gray-100 text-gray-500">未登录</span>}
+              </td>
+              <td className="px-4 py-3 border-r border-gray-50" onClick={(e)=>{e.stopPropagation();void onToggleAdmin(a,!a.enabled);}}>
+                <span className={`inline-flex rounded-full px-2 py-1 text-xs cursor-pointer ${a.enabled ? "bg-green-50 text-green-700" : "bg-gray-100 text-gray-500"}`}>{a.enabled ? "已启用" : "已停用"}</span>
+              </td>
+              <td className="px-4 py-3 border-r border-gray-50"><span className="text-xs font-mono text-gray-500">{formatCloudTime(a.createTime)}</span></td>
+              <td className="px-4 py-3"><span className="text-xs font-mono text-gray-500">{formatCloudTime(a.updateTime)}</span></td>
+            </tr>
+          ))}
+          {admins.length === 0 && (
+            <tr>
+              <td colSpan={7} className="px-6 py-16 text-center">
+                <Shield size={32} className="mx-auto text-gray-200 mb-3" />
+                <p className="text-sm text-gray-400">还没有管理员，点击右上角"添加管理员"开始配置</p>
+              </td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+      </div>
+      {editing!==undefined&&<AdminEditorModal initial={editing} onClose={()=>setEditing(undefined)} onSave={async(value)=>{await onSaveAdmin(value);setEditing(undefined);}}/>}
+    </>
+  );
+}
+
+function AdminEditorModal({initial,onClose,onSave}:{initial:AdminRecord|null;onClose:()=>void;onSave:(admin:AdminRecord)=>Promise<void>}){
+  const isEdit=Boolean(initial&&initial._id);
+  const [form,setForm]=useState<AdminRecord>(initial||{_id:"",phone:"",name:"",role:"admin",enabled:true});
+  const [saving,setSaving]=useState(false);
+  const [error,setError]=useState("");
+  const phoneValid=/^1[3-9]\d{9}$/.test(form.phone);
+  const canSave=phoneValid&&form.name.trim().length>0;
+  const save=async()=>{
+    if(!canSave)return;
+    setError("");
+    setSaving(true);
+    try{
+      await onSave({...form,phone:form.phone.replace(/\D/g,""),name:form.name.trim()});
+    }catch(e:unknown){
+      const msg=(e&&typeof e==="object"&&"code" in e)?String((e as {code:string}).code):(e instanceof Error?e.message:String(e));
+      setError(msg||"保存失败");
+      throw e;
+    }finally{
+      setSaving(false);
+    }
+  };
+  return <div className="fixed inset-0 z-50 flex items-center justify-center"><button className="absolute inset-0 bg-black/40" onClick={onClose}/><div className="relative bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4"><div className="flex justify-between items-center"><h2 className="font-semibold">{isEdit?"编辑管理员":"添加管理员"}</h2><button onClick={onClose}><X size={18}/></button></div><label className="block"><span className="text-xs text-gray-500">手机号 *</span><input value={form.phone} disabled={isEdit} onChange={e=>setForm({...form,phone:e.target.value.trim()})} placeholder="11 位手机号" className="mt-1 w-full px-3 py-2 border rounded-lg text-sm font-mono disabled:bg-gray-50 disabled:text-gray-500"/></label>{isEdit&&<p className="text-[11px] text-gray-400 -mt-2">手机号不允许修改；如需变更手机号请停用后重新添加。</p>}<label className="block"><span className="text-xs text-gray-500">姓名 *</span><input value={form.name} onChange={e=>setForm({...form,name:e.target.value})} placeholder="可选，默认留空" className="mt-1 w-full px-3 py-2 border rounded-lg text-sm"/></label><label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.enabled} onChange={e=>setForm({...form,enabled:e.target.checked})} className="rounded"/><span className="text-gray-700">启用该管理员</span></label>{!phoneValid&&form.phone.length>0&&<p className="text-xs text-red-500">手机号格式不正确，需为 11 位数字且以 1[3-9] 开头</p>}{error&&<p className="text-xs text-red-500">{error}</p>}<div className="flex justify-end gap-2"><button onClick={onClose} className="px-4 py-2 text-sm">取消</button><button disabled={saving||!canSave} onClick={()=>void save()} className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm disabled:opacity-40">{saving?"保存中…":"保存"}</button></div></div></div>;
+}
+
+function CategoryGroupModal({index,initial,onSave,onClose}:{index:number;initial?:RecycleGroup;onSave:(group:CategoryRootDraft)=>Promise<void>;onClose:()=>void}) {
+  const [form,setForm]=useState<CategoryRootDraft>(initial?{
+    _id:initial.id,
+    name:initial.name,
+    description:initial.desc,
+    sortOrder:initial.sortOrder ?? index,
+    enabled:initial.enabled,
+    allowFieldEstimate:initial.allowFieldEstimate,
+  }:{name:"",description:"",sortOrder:index,enabled:true,allowFieldEstimate:false});
   const [saving,setSaving]=useState(false);
   const save=async()=>{
     if(!form.name.trim())return;
@@ -1011,27 +1367,30 @@ function CategoryGroupModal({index,onSave,onClose}:{index:number;onSave:(group:C
     }
   };
   const inputClass="mt-1 w-full px-3 py-2 rounded-lg border border-gray-200 text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50";
-  return <div className="fixed inset-0 z-50 flex items-center justify-center"><button className="absolute inset-0 bg-black/40" onClick={onClose}/><div className="relative bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4"><div className="flex items-center justify-between"><div><h2 className="font-semibold text-gray-900">添加品类分组</h2><p className="text-xs text-gray-400 mt-1">分组创建后可以在添加或编辑品类时选择</p></div><button onClick={onClose}><X size={18}/></button></div><label className="block"><span className="text-xs text-gray-500">分组名称 *</span><input autoFocus value={form.name} onChange={event=>setForm({...form,name:event.target.value})} placeholder="例如：纸制品" className={inputClass}/></label><label className="block"><span className="text-xs text-gray-500">分组说明</span><textarea rows={3} value={form.description||""} onChange={event=>setForm({...form,description:event.target.value})} placeholder="简单描述该分组包含的品类" className={`${inputClass} resize-none`}/></label><div className="flex items-center justify-between py-2 px-3 bg-gray-50 rounded-xl"><div><p className="text-sm font-medium text-gray-700">允许现场估价</p><p className="text-xs text-gray-400">该组品类可不设置固定单价</p></div><button onClick={()=>setForm({...form,allowFieldEstimate:!form.allowFieldEstimate})}>{form.allowFieldEstimate?<ToggleRight size={26} className="text-green-500"/>:<ToggleLeft size={26} className="text-gray-300"/>}</button></div><div className="flex justify-end gap-2"><button onClick={onClose} className="px-4 py-2 text-sm text-gray-500">取消</button><button disabled={saving||!form.name.trim()} onClick={()=>void save()} className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm disabled:opacity-40">{saving?"保存中…":"创建分组"}</button></div></div></div>;
+  return <div className="fixed inset-0 z-50 flex items-center justify-center"><button className="absolute inset-0 bg-black/40" onClick={onClose}/><div className="relative bg-white rounded-2xl shadow-xl w-full max-w-md p-6 space-y-4"><div className="flex items-center justify-between"><div><h2 className="font-semibold text-gray-900">{initial?"编辑一级分类":"添加一级分类"}</h2><p className="text-xs text-gray-400 mt-1">一级分类用于归纳二级回收品类，本身不设置价格</p></div><button onClick={onClose}><X size={18}/></button></div><label className="block"><span className="text-xs text-gray-500">一级分类名称 *</span><input autoFocus value={form.name} onChange={event=>setForm({...form,name:event.target.value})} placeholder="例如：金属" className={inputClass}/></label><label className="block"><span className="text-xs text-gray-500">分类说明</span><textarea rows={3} value={form.description||""} onChange={event=>setForm({...form,description:event.target.value})} placeholder="例如：铁、不锈钢、铝合金、铜等金属制品" className={`${inputClass} resize-none`}/></label><label className="block"><span className="text-xs text-gray-500">显示顺序</span><input type="number" value={form.sortOrder} onChange={event=>setForm({...form,sortOrder:Number(event.target.value)||0})} className={inputClass}/></label><div className="flex items-center justify-between py-2 px-3 bg-gray-50 rounded-xl"><div><p className="text-sm font-medium text-gray-700">允许现场估价</p><p className="text-xs text-gray-400">该分类下的二级品类可不设置固定单价</p></div><button onClick={()=>setForm({...form,allowFieldEstimate:!form.allowFieldEstimate})}>{form.allowFieldEstimate?<ToggleRight size={26} className="text-green-500"/>:<ToggleLeft size={26} className="text-gray-300"/>}</button></div><div className="flex items-center justify-between py-2 px-3 bg-gray-50 rounded-xl"><div><p className="text-sm font-medium text-gray-700">一级分类启用</p><p className="text-xs text-gray-400">停用后该分类下的品类不在小程序展示</p></div><button onClick={()=>setForm({...form,enabled:!form.enabled})}>{form.enabled?<ToggleRight size={26} className="text-green-500"/>:<ToggleLeft size={26} className="text-gray-300"/>}</button></div><div className="flex justify-end gap-2"><button onClick={onClose} className="px-4 py-2 text-sm text-gray-500">取消</button><button disabled={saving||!form.name.trim()} onClick={()=>void save()} className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm disabled:opacity-40">{saving?"保存中…":initial?"保存修改":"创建一级分类"}</button></div></div></div>;
 }
 
 // ─── Category Editor Modal ────────────────────────────────────────────────────
-function CategoryEditorModal({ groups,initial,onSave,onClose }:{ groups:RecycleGroup[];initial?:RecycleItem;onSave:(gid:string,item:RecycleItem)=>Promise<void>;onClose:()=>void }) {
-  const initialGroupId=groups.find((group)=>group.items.some((item)=>item.id===initial?.id))?.id||groups[0]?.id||"";
+function CategoryEditorModal({ groups,initial,preferredGroupId,onSave,onClose }:{ groups:RecycleGroup[];initial?:RecycleItem;preferredGroupId?:string;onSave:(gid:string,item:RecycleItem)=>Promise<void>;onClose:()=>void }) {
+  const selectableGroups=groups.filter((group)=>group.id!=="cloud-categories");
+  const initialParentId=groups.find((group)=>group.items.some((item)=>item.id===initial?.id))?.id||preferredGroupId||selectableGroups[0]?.id||"";
   const [form,setForm]=useState({
     name:initial?.name||"",
     unit:initial?.unit||"kg",
     price:initial?.price==="—"?"":initial?.price||"",
     stationPrice:initial?.stationPrice==="—"?"":initial?.stationPrice||"",
-    groupId:initialGroupId,
+    parentId:initialParentId,
     fieldEstimate:initial?.fieldEstimate||false,
     enabled:initial?.enabled??true,
+    showOnHome:initial?.showOnHome??true,
   });
   const [err,setErr]=useState<Record<string,string>>({});
   const [saving,setSaving]=useState(false);
   const set=(k:string,v:string|boolean)=>setForm(f=>({...f,[k]:v}));
-  const selGroup=groups.find(g=>g.id===form.groupId);
+  const selGroup=groups.find(g=>g.id===form.parentId);
   function validate(){
     const e:Record<string,string>={};
+    if(!form.parentId||form.parentId==="cloud-categories") e.parentId="请选择一级分类";
     if(!form.name.trim()) e.name="请填写品类名称";
     if(!form.fieldEstimate&&!form.price.trim()) e.price="请填写收购单价";
     setErr(e); return Object.keys(e).length===0;
@@ -1040,14 +1399,15 @@ function CategoryEditorModal({ groups,initial,onSave,onClose }:{ groups:RecycleG
     if(!validate()) return;
     const newItem:RecycleItem={
       ...initial,
-      id:initial?.id||`${form.groupId}-${Date.now()}`,name:form.name.trim(),unit:form.unit,
+      id:initial?.id||`${form.parentId}-${Date.now()}`,name:form.name.trim(),unit:form.unit,
+      parentId:form.parentId,
       price:form.fieldEstimate?"—":form.price, stationPrice:form.fieldEstimate?"—":form.stationPrice||"—",
       priceRef:form.fieldEstimate?"现场估价":`${form.price}元/${form.unit}起`,
       fieldEstimate:form.fieldEstimate, enabled:form.enabled,
     };
     setSaving(true);
     try{
-      await onSave(form.groupId,newItem);
+      await onSave(form.parentId,newItem);
       onClose();
     }finally{
       setSaving(false);
@@ -1060,26 +1420,28 @@ function CategoryEditorModal({ groups,initial,onSave,onClose }:{ groups:RecycleG
       <div className="relative z-10 w-full max-w-md mx-4 bg-white rounded-2xl shadow-2xl" onClick={e=>e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
           <div>
-            <h2 className="font-semibold text-gray-900">{initial?"品类详情与编辑":"添加品类"}</h2>
-            {initial&&<p className="text-xs text-gray-400 mt-0.5">查看品类信息，修改后点击保存</p>}
+            <h2 className="font-semibold text-gray-900">{initial?"编辑二级品类":"添加二级品类"}</h2>
+            <p className="text-xs text-gray-400 mt-0.5">价格和计量单位设置在二级品类上</p>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={20}/></button>
         </div>
         <div className="px-6 py-5 space-y-4">
           <div>
-            <label className="block text-xs font-medium text-gray-500 mb-1.5">所属分组 <span className="text-red-400">*</span></label>
-            <select value={form.groupId} onChange={e=>set("groupId",e.target.value)} className={`${inp} bg-white border-gray-200`}>
-              {groups.map(g=><option key={g.id} value={g.id}>{g.name}</option>)}
+            <label className="block text-xs font-medium text-gray-500 mb-1.5">所属一级分类 <span className="text-red-400">*</span></label>
+            <select value={form.parentId} onChange={e=>set("parentId",e.target.value)} className={`${inp} bg-white ${err.parentId?"border-red-300":"border-gray-200"}`}>
+              <option value="">请选择一级分类</option>
+              {selectableGroups.map(g=><option key={g.id} value={g.id}>{g.name}</option>)}
             </select>
+            {err.parentId&&<p className="text-xs text-red-500 mt-1">{err.parentId}</p>}
           </div>
           <div className="grid grid-cols-2 gap-4">
-            <div><label className="block text-xs font-medium text-gray-500 mb-1.5">品类名称 <span className="text-red-400">*</span></label>
-              <input value={form.name} onChange={e=>set("name",e.target.value)} placeholder="如：铜线" className={`${inp} ${err.name?"border-red-300":"border-gray-200"}`}/>
+            <div><label className="block text-xs font-medium text-gray-500 mb-1.5">二级品类名称 <span className="text-red-400">*</span></label>
+              <input value={form.name} onChange={e=>set("name",e.target.value)} placeholder="如：铁、不锈钢、铜" className={`${inp} ${err.name?"border-red-300":"border-gray-200"}`}/>
               {err.name&&<p className="text-xs text-red-500 mt-1">{err.name}</p>}
             </div>
             <div><label className="block text-xs font-medium text-gray-500 mb-1.5">计量单位</label>
               <select value={form.unit} onChange={e=>set("unit",e.target.value)} className={`${inp} bg-white border-gray-200`}>
-                {["kg","台","件","双","袋","箱"].map(u=><option key={u}>{u}</option>)}
+                {["kg","斤","台","件","双","袋","箱"].map(u=><option key={u}>{u}</option>)}
               </select>
             </div>
           </div>
@@ -1107,7 +1469,7 @@ function CategoryEditorModal({ groups,initial,onSave,onClose }:{ groups:RecycleG
         </div>
         <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-3">
           <button onClick={onClose} className="px-4 py-2 rounded-lg border border-gray-200 text-sm text-gray-600 hover:bg-gray-50">取消</button>
-          <button disabled={saving} onClick={()=>void handleSave()} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium text-white hover:opacity-90 disabled:opacity-50" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}>{initial?<Save size={14}/>:<Plus size={14}/>} {saving?"保存中…":initial?"保存修改":"添加品类"}</button>
+          <button disabled={saving} onClick={()=>void handleSave()} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium text-white hover:opacity-90 disabled:opacity-50" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}>{initial?<Save size={14}/>:<Plus size={14}/>} {saving?"保存中…":initial?"保存修改":"添加二级品类"}</button>
         </div>
       </div>
     </div>
@@ -1267,24 +1629,31 @@ function ImportModal({groups,onImport,onClose}:{groups:RecycleGroup[];onImport:(
 }
 
 // ─── Recycle Cats Page ────────────────────────────────────────────────────────
-function RecycleCatsPage({ groups,onSaveCategory,onSaveGroup,onUnsupported }:{ groups:RecycleGroup[];onSaveCategory:(item:RecycleItem,gid:string)=>Promise<void>;onSaveGroup:(group:CloudCategoryGroup)=>Promise<void>;onUnsupported:(feature:string)=>void }) {
+function RecycleCatsPage({ groups,onSaveCategory,onSaveGroup,onDeleteCategory,onDeleteGroup,onUnsupported }:{ groups:RecycleGroup[];onSaveCategory:(item:RecycleItem,parentId:string)=>Promise<void>;onSaveGroup:(group:CategoryRootDraft)=>Promise<void>;onDeleteCategory:(item:RecycleItem)=>Promise<void>;onDeleteGroup:(group:RecycleGroup)=>Promise<void>;onUnsupported:(feature:string)=>void }) {
   const [expanded,setExpanded]=useState<Set<string>>(new Set(groups.map((group)=>group.id)));
   const [search,setSearch]=useState("");
-  const [showAddItem,setShowAddItem]=useState(false);
-  const [showImport,setShowImport]=useState(false);
-  const [showAddGroup,setShowAddGroup]=useState(false);
+  const [showAddCategory,setShowAddCategory]=useState(false);
+  const [editingGroup,setEditingGroup]=useState<RecycleGroup>();
   const [editingItem,setEditingItem]=useState<RecycleItem>();
 
   useEffect(()=>{setExpanded(prev=>new Set([...prev,...groups.map((group)=>group.id)]));},[groups]);
-  const toggleGroup=()=>onUnsupported("品类分组启停");
+  const toggleGroup=(group:RecycleGroup)=>{
+    if(group.id==="cloud-categories"){onUnsupported("未分组品类启停");return;}
+    void onSaveGroup({
+      _id:group.id,
+      name:group.name,
+      description:group.desc,
+      sortOrder:group.sortOrder ?? 0,
+      enabled:!group.enabled,
+      allowFieldEstimate:group.allowFieldEstimate,
+    });
+  };
   const toggleItem=(gid:string,iid:string)=>{
     const item=groups.find((group)=>group.id===gid)?.items.find((entry)=>entry.id===iid);
     if(item) void onSaveCategory({...item,enabled:!item.enabled},gid);
   };
   const toggleExpand=(id:string)=>setExpanded(prev=>{const s=new Set(prev);s.has(id)?s.delete(id):s.add(id);return s;});
-
   async function saveItem(gid:string,item:RecycleItem){ await onSaveCategory(item,gid); }
-  function addItems(gid:string,items:RecycleItem[]){ void Promise.all(items.map((item)=>onSaveCategory(item,gid))).then(()=>setShowImport(false)); }
 
   const filteredGroups=groups.map(g=>{
     const q=search.toLowerCase();
@@ -1298,18 +1667,16 @@ function RecycleCatsPage({ groups,onSaveCategory,onSaveGroup,onUnsupported }:{ g
   return(
     <div className="p-6 space-y-5">
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <div><h1 className="text-xl font-semibold text-gray-900">品类管理</h1><p className="text-sm text-gray-400 mt-0.5">管理回收分组及具体品类单价</p></div>
+        <div><div className="flex items-center gap-2"><h1 className="text-xl font-semibold text-gray-900">品类管理</h1><span className="text-xs px-2 py-1 rounded-full bg-green-50 text-green-700 border border-green-100">根节点：回收品类</span></div><p className="text-sm text-gray-400 mt-0.5">一级分类展示在首页，二级品类维护真实回收单价</p></div>
         <div className="flex items-center gap-2">
-          <button onClick={()=>setShowAddGroup(true)} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border border-gray-200 text-gray-600 hover:border-gray-300 transition-all"><Plus size={14}/>添加分组</button>
-          <button onClick={()=>setShowImport(true)} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium border border-gray-200 text-gray-600 hover:border-gray-300 transition-all"><Upload size={14}/>导入Excel</button>
-          <button onClick={()=>setShowAddItem(true)} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white hover:opacity-90 transition-all" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}><Plus size={14}/>添加品类</button>
+          <button onClick={()=>setShowAddCategory(true)} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white hover:opacity-90 transition-all" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}><Plus size={14}/>添加品类</button>
         </div>
       </div>
 
       {/* Search */}
       <div className="relative">
         <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/>
-        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="搜索品类名称或分组名称…" className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50 transition-all bg-white"/>
+        <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="搜索一级分类或二级品类名称…" className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50 transition-all bg-white"/>
         {search&&<button onClick={()=>setSearch("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"><X size={14}/></button>}
       </div>
 
@@ -1329,18 +1696,48 @@ function RecycleCatsPage({ groups,onSaveCategory,onSaveGroup,onUnsupported }:{ g
               <div className="flex-1">
                 <div className="flex items-center gap-2">
                   <p className="font-semibold text-gray-900 text-sm">{group.name}</p>
+                  <span className="text-[10px] font-semibold bg-green-50 text-green-700 border border-green-100 px-1.5 py-0.5 rounded-full">{group.id==="cloud-categories"?"待归类":"一级分类"}</span>
                   {group.allowFieldEstimate&&<span className="text-[10px] font-semibold bg-amber-100 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded-full">现场估价</span>}
                 </div>
-                <p className="text-xs text-gray-400">{group.desc} · {group.items.filter(i=>i.enabled).length}/{group.items.length} 个品类启用</p>
+                <p className="text-xs text-gray-400">{group.desc} · {group.items.filter(i=>i.enabled).length}/{group.items.length} 个二级品类启用</p>
               </div>
-              <button onClick={toggleGroup}>{group.enabled?<ToggleRight size={22} className="text-green-500"/>:<ToggleLeft size={22} className="text-gray-300"/>}</button>
+              {group.id!=="cloud-categories"&&<>
+                <button onClick={()=>setEditingGroup(group)} className="p-1.5 text-gray-400 hover:text-blue-600" title="编辑一级分类"><Edit2 size={15}/></button>
+              </>}
+              {group.id!=="cloud-categories"&&<button onClick={()=>toggleGroup(group)} title={group.enabled?"停用一级分类":"启用一级分类"}>{group.enabled?<ToggleRight size={22} className="text-green-500"/>:<ToggleLeft size={22} className="text-gray-300"/>}</button>}
             </div>
 
-            {/* Items — 1 per row table */}
+            {/* Items — desktop table */}
             {expanded.has(group.id)&&(
               group.items.length===0
-              ?<div className="py-8 flex flex-col items-center gap-1 text-gray-300"><p className="text-sm">暂无品类</p><button onClick={()=>setShowAddItem(true)} className="text-xs text-green-600 hover:text-green-800 mt-1 flex items-center gap-1"><Plus size={11}/>添加品类</button></div>
-              :<table className="w-full" style={{tableLayout:"fixed"}}>
+              ?<div className="py-8 flex flex-col items-center gap-1 text-gray-300"><p className="text-sm">暂无子品类</p><p className="text-xs">使用右上角"添加品类"创建二级品类</p></div>
+              :<>
+              {/* Mobile item cards */}
+              <div className="md:hidden divide-y divide-gray-50">
+                {group.items.map((item)=>{
+                  const sp=spread(item.price,item.stationPrice);
+                  return(
+                    <button key={item.id} onClick={()=>setEditingItem(item)} className={`w-full px-4 py-3 text-left active:bg-gray-50 transition-colors ${!item.enabled?"opacity-50":""}`}>
+                      <div className="flex items-center justify-between mb-1.5">
+                        <div className="flex items-center gap-2">
+                          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${item.enabled?"bg-green-400":"bg-gray-300"}`}/>
+                          <span className="text-sm font-medium text-gray-800">{item.name}</span>
+                          {item.fieldEstimate&&<span className="text-[10px] font-medium bg-amber-50 text-amber-600 border border-amber-200 px-1.5 py-0.5 rounded-full">估价</span>}
+                        </div>
+                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${item.enabled?"bg-green-100 text-green-700":"bg-red-100 text-red-600"}`}>{item.enabled?"上架":"下架"}</span>
+                      </div>
+                      <div className="flex items-center gap-3 text-xs text-gray-500 pl-3.5">
+                        <span className="font-mono">{item.unit}</span>
+                        <span className="text-gray-300">·</span>
+                        {item.fieldEstimate?<span className="text-amber-600 italic">面议</span>:<span className="font-bold text-gray-800 font-mono">¥{item.price}</span>}
+                        {sp!==null&&<><span className="text-gray-300">·</span><span className={`font-bold font-mono ${parseFloat(sp)>0?"text-green-600":"text-red-500"}`}>{parseFloat(sp)>0?"+":""}{sp}</span></>}
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+              {/* Desktop table */}
+              <table className="hidden md:table w-full" style={{tableLayout:"fixed"}}>
                 <colgroup>{CAT_COL_WIDTHS.map((w,i)=><col key={i} style={{width:w}}/>)}</colgroup>
                 <thead>
                   <tr className="border-b border-gray-100">
@@ -1376,51 +1773,427 @@ function RecycleCatsPage({ groups,onSaveCategory,onSaveGroup,onUnsupported }:{ g
                           {pct!==null?<span className={`text-xs font-semibold font-mono px-1.5 py-0.5 rounded ${parseFloat(pct)>0?"bg-green-50 text-green-700":"bg-red-50 text-red-600"}`}>{parseFloat(pct)>0?"+":""}{pct}%</span>:<span className="text-xs text-gray-300">—</span>}
                         </td>
                         <td className="px-4 py-2.5">
+                          <div className="flex items-center gap-2">
                           <button onClick={event=>{event.stopPropagation();toggleItem(group.id,item.id);}}>
                             {item.enabled
                               ?<span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 border border-green-200">已上架</span>
                               :<span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-red-100 text-red-600 border border-red-200">已下架</span>
                             }
                           </button>
+                          </div>
                         </td>
                       </tr>
                     );
                   })}
                 </tbody>
               </table>
+              </>
             )}
           </div>
         ))}
       </div>
-      {showAddItem&&<CategoryEditorModal groups={groups} onSave={saveItem} onClose={()=>setShowAddItem(false)}/>}
       {editingItem&&<CategoryEditorModal groups={groups} initial={editingItem} onSave={saveItem} onClose={()=>setEditingItem(undefined)}/>}
-      {showAddGroup&&<CategoryGroupModal index={groups.length+1} onSave={onSaveGroup} onClose={()=>setShowAddGroup(false)}/>}
-      {showImport&&<ImportModal groups={groups} onImport={addItems} onClose={()=>setShowImport(false)}/>}
+      {editingGroup&&<CategoryGroupModal index={editingGroup.sortOrder??groups.length} initial={editingGroup} onSave={onSaveGroup} onClose={()=>setEditingGroup(undefined)}/>}
     </div>
   );
 }
 
-// ─── System Page ──────────────────────────────────────────────────────────────
-function SystemPage({items,onSave,onDelete}:{items:SystemSetting[];onSave:(item:SystemSetting)=>Promise<void>;onDelete:(item:SystemSetting)=>Promise<void>}){
-  const [search,setSearch]=useState("");
-  const [editing,setEditing]=useState<SystemSetting|null|undefined>(undefined);
-  const filtered=items.filter((item)=>[item.key,item.label,item.value,item.description].some((value)=>String(value||"").toLowerCase().includes(search.toLowerCase())));
-  const typeText:Record<SystemSetting["type"],string>={text:"文本",number:"数字",boolean:"布尔",image:"图片"};
-  return <div className="p-6 space-y-5">
-    <div className="flex items-center justify-between"><div><h1 className="text-xl font-semibold text-gray-900">系统配置字典</h1><p className="text-sm text-gray-400 mt-0.5">所有 value 统一按字符串保存，小程序和管理端共用</p></div><button onClick={()=>setEditing(null)} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white bg-green-600 hover:bg-green-700"><Plus size={14}/>新增配置</button></div>
-    <div className="relative"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/><input value={search} onChange={(event)=>setSearch(event.target.value)} placeholder="搜索 Key、名称、Value 或说明…" className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm bg-white outline-none focus:border-green-400"/></div>
-    <div className="bg-white rounded-xl border border-gray-100 overflow-hidden"><table className="w-full"><thead><tr className="bg-gray-50 border-b border-gray-100">{["Key","Value","类型","名称与说明","更新时间","操作"].map((title)=><th key={title} className="text-left px-4 py-3 text-xs font-semibold text-gray-500">{title}</th>)}</tr></thead><tbody>{filtered.map((item)=><tr key={item.key} className="border-b border-gray-50 hover:bg-gray-50/50"><td className="px-4 py-3"><code className="text-xs text-green-700 bg-green-50 px-2 py-1 rounded">{item.key}</code></td><td className="px-4 py-3 max-w-xs"><div className="text-xs font-mono text-gray-700 break-all line-clamp-2">{item.value||<span className="text-gray-300">空字符串</span>}</div>{item.type==="image"&&item.imageUrl&&<img src={item.imageUrl} alt={item.label} className="mt-2 w-16 h-10 object-cover rounded border"/>}</td><td className="px-4 py-3"><span className="text-xs px-2 py-1 rounded bg-gray-100 text-gray-600">{typeText[item.type]}</span></td><td className="px-4 py-3"><p className="text-sm font-medium text-gray-700">{item.label||item.key}</p><p className="text-xs text-gray-400 mt-1">{item.description||"—"}</p></td><td className="px-4 py-3 text-xs text-gray-400 font-mono">{formatCloudTime(item.updateTime)}</td><td className="px-4 py-3"><RowActions layout="inline"><RowActionButton tone="blue" icon={Edit2} onClick={()=>setEditing(item)}>编辑</RowActionButton><RowActionButton tone="red" icon={Trash2} onClick={()=>void onDelete(item)}>{item._id?.startsWith("virtual:")?"移除默认":"删除"}</RowActionButton></RowActions></td></tr>)}{filtered.length===0&&<tr><td colSpan={6} className="px-6 py-16 text-center text-sm text-gray-400">暂无匹配的配置项</td></tr>}</tbody></table><div className="px-4 py-3 border-t text-xs text-gray-400">共 {filtered.length} / {items.length} 项配置</div></div>
-    {editing!==undefined&&<SystemSettingEditor initial={editing} onClose={()=>setEditing(undefined)} onSave={async(item)=>{await onSave(item);setEditing(undefined);}}/>}
+function findCategoryPath(nodes:CategoryNode[],id:string):string[] {
+  for(const node of nodes){
+    if(node.id===id)return [node.id];
+    const childPath=findCategoryPath(node.children,id);
+    if(childPath.length)return [node.id,...childPath];
+  }
+  return [];
+}
+
+function CategoryParentCascader({nodes,value,excluded,onChange}:{nodes:CategoryNode[];value:string;excluded:Set<string>;onChange:(id:string)=>void}) {
+  const [path,setPath]=useState<string[]>(value?findCategoryPath(nodes,value):[]);
+  useEffect(()=>setPath(value?findCategoryPath(nodes,value):[]),[nodes,value]);
+  const levels:CategoryNode[][]=[];
+  let options=nodes.filter((item)=>!excluded.has(item.id));
+  levels.push(options);
+  path.forEach((id)=>{
+    const selected=options.find((item)=>item.id===id);
+    if(selected?.children.length){
+      options=selected.children.filter((item)=>!excluded.has(item.id));
+      levels.push(options);
+    }
+  });
+  const selectAt=(level:number,id:string)=>{
+    const next=id?[...path.slice(0,level),id]:path.slice(0,level);
+    setPath(next);
+    onChange(next[next.length-1]||"");
+  };
+  return <div><span className="block text-xs font-medium text-gray-500 mb-1.5">父级节点</span><div className="grid grid-cols-2 gap-2">{levels.map((items,index)=><select key={index} value={path[index]||""} onChange={(event)=>selectAt(index,event.target.value)} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm bg-white outline-none focus:border-green-400"><option value="">{index===0?"无父级（根节点）":"停在上一级"}</option>{items.map((item)=><option key={item.id} value={item.id}>{item.name}</option>)}</select>)}</div>{path.length>0&&<p className="text-xs text-green-700 mt-2">当前父级：{path.map((id)=>flattenCategoryTree(nodes).find((item)=>item.id===id)?.name).filter(Boolean).join(" / ")}</p>}</div>;
+}
+
+function CategoryNodeModal({nodes,initial,onSave,onClose,onDelete}:{nodes:CategoryNode[];initial?:CategoryNode;onSave:(item:RecycleItem)=>Promise<void>;onClose:()=>void;onDelete?:(item:RecycleItem)=>Promise<void>}) {
+  const allNodes=flattenCategoryTree(nodes);
+  const descendantIds=new Set(initial?flattenCategoryTree(initial.children).map((item)=>item.id):[]);
+  const excludedIds=new Set([initial?.id,...descendantIds].filter(Boolean) as string[]);
+  const [form,setForm]=useState({
+    name:initial?.name||"",
+    parentId:initial?.parentId||"",
+    unit:initial?.unit||"kg",
+    price:initial?.price==="—"?"":initial?.price||"",
+    sortOrder:initial?.sortOrder||0,
+    fieldEstimate:initial?.fieldEstimate||false,
+    enabled:initial?.enabled??true,
+    showOnHome:initial?.showOnHome??true,
+    minVisitKg: typeof initial?.minVisitKg==="number" ? String(initial.minVisitKg) : "",
+  });
+  const [error,setError]=useState("");
+  const [saving,setSaving]=useState(false);
+  const [confirmingDelete,setConfirmingDelete]=useState(false);
+  const [deleting,setDeleting]=useState(false);
+  const save=async()=>{
+    if(!form.name.trim()){setError("请填写品类名称");return;}
+    if(allNodes.some((item)=>item.id!==initial?.id&&item.name.trim().toLowerCase()===form.name.trim().toLowerCase())){setError("品类名称不能重复");return;}
+    setSaving(true);
+    try{
+      await onSave({
+        ...initial,
+        id:initial?.id||`category-${Date.now()}`,
+        categoryId:initial?.categoryId,
+        parentId:form.parentId||null,
+        name:form.name.trim(),
+        unit:form.unit,
+        price:form.fieldEstimate?"—":form.price||"—",
+        stationPrice:initial?.stationPrice||"—",
+        priceRef:form.fieldEstimate?"现场估价":form.price?`${form.price}元/${form.unit}起`:"",
+        sortOrder:form.sortOrder,
+        fieldEstimate:form.fieldEstimate,
+        enabled:form.enabled,
+        showOnHome:form.parentId?false:form.showOnHome,
+        minVisitKg: form.minVisitKg.trim()==="" ? undefined : Number(form.minVisitKg),
+      });
+      onClose();
+    }finally{setSaving(false);}
+  };
+  const inputClass="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50";
+  // 二次确认 3 秒内不点 → 自动复原
+  useEffect(()=>{
+    if(!confirmingDelete)return;
+    const timer=setTimeout(()=>setConfirmingDelete(false),3000);
+    return()=>clearTimeout(timer);
+  },[confirmingDelete]);
+  const handleDeleteClick=async()=>{
+    if(!initial||!onDelete)return;
+    if(!confirmingDelete){setConfirmingDelete(true);return;}
+    setDeleting(true);
+    try{
+      await onDelete(initial as RecycleItem);
+    }finally{
+      setDeleting(false);
+      setConfirmingDelete(false);
+    }
+  };
+  const descendantCount=initial?flattenCategoryTree(initial.children).length:0;
+  return <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <button className="absolute inset-0 bg-black/40" onClick={onClose}/>
+    <div className="relative w-full max-w-2xl mx-4 bg-white rounded-2xl shadow-2xl overflow-hidden">
+      <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+        <div><h2 className="font-semibold text-gray-900">{initial?"编辑品类节点":"添加品类"}</h2><p className="text-xs text-gray-400 mt-1">不选择父级即为一级类别，可选择任意节点作为父级</p></div>
+        <button onClick={onClose}><X size={19} className="text-gray-400"/></button>
+      </div>
+      <div className="px-8 py-6 space-y-5 max-h-[70vh] overflow-y-auto">
+        <CategoryParentCascader nodes={nodes} value={form.parentId} excluded={excludedIds} onChange={(parentId)=>setForm({...form,parentId,showOnHome:parentId?false:form.showOnHome})}/>
+        <div className="grid grid-cols-2 gap-4">
+          <label><span className="block text-xs font-medium text-gray-500 mb-1.5">品类名称 *</span><input autoFocus value={form.name} onChange={(event)=>{setForm({...form,name:event.target.value});setError("");}} placeholder="请输入品类名称" className={`${inputClass} ${error?"border-red-300":""}`}/>{error&&<p className="text-xs text-red-500 mt-1">{error}</p>}</label>
+          <label><span className="block text-xs font-medium text-gray-500 mb-1.5">显示顺序</span><input type="number" value={form.sortOrder} onChange={(event)=>setForm({...form,sortOrder:Number(event.target.value)||0})} className={inputClass}/></label>
+        </div>
+        <div className="grid grid-cols-2 gap-4">
+          <label><span className="block text-xs font-medium text-gray-500 mb-1.5">计量单位</span><select value={form.unit} onChange={(event)=>setForm({...form,unit:event.target.value})} className={`${inputClass} bg-white`}>{["kg","斤","台","件","双","袋","箱"].map((unit)=><option key={unit}>{unit}</option>)}</select></label>
+          <label><span className="block text-xs font-medium text-gray-500 mb-1.5">参考价格（元）</span><input disabled={form.fieldEstimate} value={form.price} onChange={(event)=>setForm({...form,price:event.target.value})} placeholder={form.fieldEstimate?"现场估价":"可留空"} className={`${inputClass} disabled:bg-gray-100`}/></label><label><span className="block text-xs font-medium text-gray-500 mb-1.5">最低上门重量（斤）<span className="text-gray-300 font-normal"> · 留空沿用全局</span></span><input type="number" min={0} step={0.1} value={form.minVisitKg} onChange={(event)=>setForm({...form,minVisitKg:event.target.value})} placeholder="例如：10（不填则沿用全局设置）" className={`${inputClass} font-mono`}/></label>
+        </div>
+        <div className="flex items-center justify-between px-3 py-2 bg-amber-50 rounded-xl"><div><p className="text-sm font-medium text-amber-800">现场估价</p><p className="text-xs text-amber-600">该节点不设置固定参考价格</p></div><button onClick={()=>setForm({...form,fieldEstimate:!form.fieldEstimate})}>{form.fieldEstimate?<ToggleRight size={26} className="text-amber-500"/>:<ToggleLeft size={26} className="text-gray-300"/>}</button></div>
+        {!form.parentId&&<div className="flex items-center justify-between px-3 py-2 bg-green-50 rounded-xl"><div><p className="text-sm font-medium text-green-800">首页展示</p><p className="text-xs text-green-600">首页最多展示排序靠前的 4 个一级类别</p></div><button onClick={()=>setForm({...form,showOnHome:!form.showOnHome})}>{form.showOnHome?<ToggleRight size={26} className="text-green-500"/>:<ToggleLeft size={26} className="text-gray-300"/>}</button></div>}
+        <div className="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-xl"><div><p className="text-sm font-medium text-gray-700">启用节点</p><p className="text-xs text-gray-400">停用后该节点不在小程序展示</p></div><button onClick={()=>setForm({...form,enabled:!form.enabled})}>{form.enabled?<ToggleRight size={26} className="text-green-500"/>:<ToggleLeft size={26} className="text-gray-300"/>}</button></div>
+      </div>
+      <div className="flex items-center gap-2 px-6 py-4 border-t border-gray-100 bg-gray-50/50">
+        {initial&&onDelete&&(
+          <button type="button" onClick={()=>void handleDeleteClick()} disabled={deleting} className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm transition-colors disabled:opacity-50 mr-auto ${confirmingDelete?"bg-red-600 text-white hover:bg-red-700":"text-red-500 hover:bg-red-50"}`}>
+            <Trash2 size={14}/>
+            {deleting?"删除中…":confirmingDelete?(descendantCount?`确认删除（含 ${descendantCount} 个子节点）？`:"确认删除？"):"删除"}
+          </button>
+        )}
+        <button onClick={onClose} className="px-4 py-2 text-sm text-gray-500">取消</button>
+        <button disabled={saving} onClick={()=>void save()} className="px-5 py-2 rounded-lg text-sm font-medium text-white bg-green-600 hover:bg-green-700 disabled:opacity-40">{saving?"保存中…":initial?"保存修改":"添加品类"}</button>
+      </div>
+    </div>
   </div>;
 }
 
-function SystemSettingEditor({initial,onClose,onSave}:{initial:SystemSetting|null;onClose:()=>void;onSave:(item:SystemSetting)=>Promise<void>}){
+function getCategoryDepth(nodes:CategoryNode[],id:string,depth=0):number {
+  for(const node of nodes){
+    if(node.id===id)return depth;
+    const found=getCategoryDepth(node.children,id,depth+1);
+    if(found>=0)return found;
+  }
+  return -1;
+}
+
+function CategoryTreePage({nodes,onSave,onDelete}:{nodes:CategoryNode[];onSave:(item:RecycleItem)=>Promise<void>;onDelete:(item:RecycleItem)=>Promise<void>}) {
+  const [search,setSearch]=useState("");
+  const [expanded,setExpanded]=useState<Set<string>>(new Set(flattenCategoryTree(nodes).map((item)=>item.id)));
+  const [editing,setEditing]=useState<CategoryNode>();
+  const [adding,setAdding]=useState(false);
+  useEffect(()=>setExpanded((current)=>new Set([...current,...flattenCategoryTree(nodes).map((item)=>item.id)])),[nodes]);
+  const visible=filterCategoryTree(nodes,search);
+  const toggle=(id:string)=>setExpanded((current)=>{const next=new Set(current);next.has(id)?next.delete(id):next.add(id);return next;});
+  const renderRows=(items:CategoryNode[],depth=0):ReactNode=>items.map((item)=><Fragment key={item.id}><tr tabIndex={0} onClick={()=>setEditing(item)} onKeyDown={(event)=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();setEditing(item);}}} className={`border-b border-gray-50 hover:bg-green-50/40 cursor-pointer ${!item.enabled?"opacity-50":""}`}><td className="px-4 py-3"><div className="flex items-center gap-2" style={{paddingLeft:depth*28}}>{item.children.length>0?<button onClick={(event)=>{event.stopPropagation();toggle(item.id);}} className="w-6 h-6 rounded flex items-center justify-center text-gray-400 hover:bg-gray-100">{expanded.has(item.id)?<ChevronDown size={15}/>:<ChevronRight size={15}/>}</button>:<span className="w-6 flex justify-center"><span className="w-1.5 h-1.5 rounded-full bg-gray-300"/></span>}<div className={`w-7 h-7 rounded-lg flex items-center justify-center ${depth===0?"bg-green-100 text-green-700":"bg-gray-100 text-gray-500"}`}>{depth===0?<Package size={14}/>:<Tags size={13}/>}</div><div><p className="text-sm font-medium text-gray-800">{item.name}</p><p className="text-[10px] text-gray-400">{depth===0?"根节点":`第 ${depth+1} 层节点`} · {item.children.length} 个直接子节点</p></div></div></td><td className="px-4 py-3 text-xs text-gray-500 font-mono">{item.unit||"—"}</td><td className="px-4 py-3 text-sm font-mono">{item.fieldEstimate?<span className="text-amber-600">现场估价</span>:item.price&&item.price!=="—"?`¥${item.price}`:"—"}</td><td className="px-4 py-3 text-xs text-gray-500 font-mono">{typeof item.minVisitKg==="number"?`≥ ${item.minVisitKg} kg`:<span className="text-gray-300">— 全局</span>}</td><td className="px-4 py-3 text-xs text-gray-500">{item.sortOrder??0}</td><td className="px-4 py-3" onClick={(event)=>event.stopPropagation()}><button onClick={()=>void onSave({...item,enabled:!item.enabled})}>{item.enabled?<span className="px-2 py-0.5 rounded-full text-xs bg-green-100 text-green-700 border border-green-200">已启用</span>:<span className="px-2 py-0.5 rounded-full text-xs bg-red-50 text-red-600 border border-red-200">已停用</span>}</button></td></tr>{item.children.length>0&&expanded.has(item.id)&&renderRows(item.children,depth+1)}</Fragment>);
+  return <div className="p-6 space-y-5"><div className="flex items-center justify-between"><div><h1 className="text-xl font-semibold text-gray-900">品类管理</h1><p className="text-sm text-gray-400 mt-0.5">统一父子节点模型，支持任意层级嵌套</p></div><button onClick={()=>setAdding(true)} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white bg-green-600 hover:bg-green-700"><Plus size={14}/>添加品类</button></div><div className="relative"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/><input value={search} onChange={(event)=>setSearch(event.target.value)} placeholder="搜索品类节点…" className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm bg-white outline-none focus:border-green-400"/></div><div className="bg-white rounded-xl border border-gray-100 overflow-hidden"><table className="w-full"><thead><tr className="bg-gray-50 border-b border-gray-100">{["品类树","单位","参考价格","上门门槛","排序","状态"].map((title)=><th key={title} className="text-left px-4 py-3 text-xs font-semibold text-gray-500">{title}</th>)}</tr></thead><tbody>{renderRows(visible)}{visible.length===0&&<tr><td colSpan={6} className="px-6 py-16 text-center text-sm text-gray-400">暂无品类节点</td></tr>}</tbody></table></div>{adding&&<CategoryNodeModal key="new" nodes={nodes} onSave={onSave} onClose={()=>setAdding(false)}/>} {editing&&<CategoryNodeModal key={editing.id} nodes={nodes} initial={editing} onSave={onSave} onClose={()=>setEditing(undefined)} onDelete={async(item)=>{await onDelete(item);setEditing(undefined);}}/>}</div>;
+}
+
+// ─── System Page ──────────────────────────────────────────────────────────────
+const SYS_CFG_COL_KEY = "system-config-column-widths-v1";
+const SYS_CFG_DEFAULT_WIDTHS = ["40%", "auto", "6rem", "10rem", "11rem"];
+const SYS_CFG_MIN_WIDTHS = ["14rem", "10rem", "5rem", "8rem", "9rem"];
+
+function SystemPage({items,onSave,onDelete}:{items:SystemSetting[];onSave:(item:SystemSetting)=>Promise<void>;onDelete:(item:SystemSetting)=>Promise<void>}){
+  const [search,setSearch]=useState("");
+  const [editing,setEditing]=useState<SystemSetting|null|undefined>(undefined);
+
+  // 列宽拖拽：拖拽期间直接改 DOM，mouseup 才同步 state 到 React + localStorage
+  const sysTableRef=useRef<HTMLTableElement>(null);
+  const sysDragRef=useRef<{index:number;startX:number;startWidth:number}|null>(null);
+  const [colWidths,setColWidths]=useState<string[]>(()=>{
+    if(typeof window==="undefined")return SYS_CFG_DEFAULT_WIDTHS;
+    try{
+      const saved=window.localStorage.getItem(SYS_CFG_COL_KEY);
+      if(saved){
+        const parsed=JSON.parse(saved);
+        if(Array.isArray(parsed)&&parsed.length===SYS_CFG_DEFAULT_WIDTHS.length)return parsed;
+      }
+    }catch{}
+    return SYS_CFG_DEFAULT_WIDTHS;
+  });
+  useEffect(()=>{
+    if(typeof window==="undefined")return;
+    try{window.localStorage.setItem(SYS_CFG_COL_KEY,JSON.stringify(colWidths));}catch{}
+  },[colWidths]);
+  const onColMouseMove=useCallback((event:MouseEvent)=>{
+    const drag=sysDragRef.current;
+    if(!drag||!sysTableRef.current)return;
+    const colEl=sysTableRef.current.querySelectorAll("col")[drag.index] as HTMLElement|undefined;
+    if(!colEl)return;
+    const minPx=parseInt(SYS_CFG_MIN_WIDTHS[drag.index],10);
+    const newPx=Math.max(minPx,drag.startWidth+(event.clientX-drag.startX));
+    const tableWidth=sysTableRef.current.getBoundingClientRect().width;
+    const newPct=Math.min(95,Math.max(2,(newPx/tableWidth)*100));
+    colEl.style.width=`${newPct.toFixed(2)}%`;
+  },[]);
+  const onColMouseUp=useCallback(()=>{
+    const drag=sysDragRef.current;
+    if(drag&&sysTableRef.current){
+      const colEl=sysTableRef.current.querySelectorAll("col")[drag.index] as HTMLElement|undefined;
+      if(colEl&&colEl.style.width){
+        const final=colEl.style.width;
+        setColWidths((prev)=>{const next=[...prev];next[drag.index]=final;return next;});
+      }
+    }
+    sysDragRef.current=null;
+    document.body.style.userSelect="";
+    document.body.style.cursor="";
+    window.removeEventListener("mousemove",onColMouseMove);
+    window.removeEventListener("mouseup",onColMouseUp);
+  },[onColMouseMove]);
+  const startColDrag=(index:number)=>(event:React.MouseEvent)=>{
+    event.preventDefault();
+    event.stopPropagation();
+    if(!sysTableRef.current)return;
+    const colEl=sysTableRef.current.querySelectorAll("col")[index] as HTMLElement|undefined;
+    if(!colEl)return;
+    sysDragRef.current={index,startX:event.clientX,startWidth:colEl.getBoundingClientRect().width};
+    document.body.style.userSelect="none";
+    document.body.style.cursor="col-resize";
+    window.addEventListener("mousemove",onColMouseMove);
+    window.addEventListener("mouseup",onColMouseUp);
+  };
+  const resetColWidths=()=>{setColWidths(SYS_CFG_DEFAULT_WIDTHS);};
+  const filtered=items.filter((item)=>[item.key,item.label,item.value,item.description].some((value)=>String(value||"").toLowerCase().includes(search.toLowerCase())));
+  const typeText:Record<SystemSetting["type"],string>={text:"文本",number:"数字",boolean:"布尔",image:"图片",longtext:"长文本"};
+  return <div className="p-4 md:p-6 space-y-4 md:space-y-5">
+    <div className="flex items-center justify-between flex-wrap gap-2"><div><h1 className="text-lg md:text-xl font-semibold text-gray-900">系统配置字典</h1><p className="text-xs md:text-sm text-gray-400 mt-0.5">所有 value 统一按字符串保存，小程序和管理端共用</p></div><div className="flex items-center gap-2"><button onClick={resetColWidths} className="hidden md:inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs text-gray-500 border border-gray-200 hover:bg-gray-50"><RotateCcw size={12}/>重置列宽</button><button onClick={()=>setEditing(null)} className="flex items-center gap-2 px-3 py-2 md:px-4 rounded-lg text-sm font-medium text-white bg-green-600 hover:bg-green-700"><Plus size={14}/>新增配置</button></div></div>
+    <div className="relative"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/><input value={search} onChange={(event)=>setSearch(event.target.value)} placeholder="搜索 Key、名称、Value 或说明…" className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm bg-white outline-none focus:border-green-400"/></div>
+    {/* Mobile Card List */}
+    <div className="md:hidden space-y-3">
+      {filtered.length===0?<div className="bg-white rounded-xl p-8 text-center text-sm text-gray-400 border border-gray-100">暂无匹配的配置项</div>:filtered.map((item)=>(
+        <div key={item.key} className="bg-white rounded-xl p-4 border border-gray-100">
+          <div className="flex items-center justify-between mb-2">
+            <code className="text-xs text-green-700 bg-green-50 px-2 py-0.5 rounded font-mono">{item.key}</code>
+            <span className="inline-flex text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-600">{typeText[item.type]}</span>
+          </div>
+          <p className="text-sm font-medium text-gray-800 mb-1">{item.label||item.key}</p>
+          {item.description&&<p className="text-xs text-gray-500 mb-2 leading-relaxed">{item.description}</p>}
+          <div className="mt-2 pt-2 border-t border-gray-50">
+            {item.type==="image"?(
+              item.imageUrl?<div className="flex items-center gap-2"><img src={cloudUrlToHttps(item.imageUrl)} alt={item.label} className="w-16 h-10 object-cover rounded border border-gray-200 flex-shrink-0"/><span className="text-xs text-gray-400 font-mono truncate">已上传图片</span></div>:<span className="text-xs text-gray-400">未上传图片</span>
+            ):(
+              <span className={`text-xs font-mono text-gray-600 break-all ${item.type==="longtext"?"line-clamp-2":"whitespace-pre-wrap line-clamp-2"}`}>{item.value||<span className="text-gray-300">空字符串</span>}</span>
+            )}
+          </div>
+          <div className="mt-3 flex justify-end">
+            <button onClick={()=>setEditing(item)} className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-medium text-blue-600 bg-blue-50 hover:bg-blue-100"><Edit2 size={12}/>编辑</button>
+          </div>
+        </div>
+      ))}
+      <div className="text-center text-xs text-gray-400 py-2">{filtered.length} / {items.length} 项配置</div>
+    </div>
+
+    {/* Desktop Table */}
+    <div className="hidden md:block bg-white rounded-xl border border-gray-100 overflow-hidden">
+          <table ref={sysTableRef} className="w-full table-fixed">
+            <colgroup>
+              {colWidths.map((width,i)=>(<col key={i} style={{width,minWidth:SYS_CFG_MIN_WIDTHS[i]}} />))}
+            </colgroup>
+            <thead>
+              <tr className="bg-gray-50 border-b border-gray-100">
+                {["Key & 标签","Value","类型","更新时间","操作"].map((title,i)=>
+                  <th key={title} style={{minWidth:SYS_CFG_MIN_WIDTHS[i]}} className="relative text-left px-5 py-3 text-xs font-medium text-gray-500 tracking-wide select-none">
+                    {title}
+                    <div onMouseDown={startColDrag(i)} className="absolute top-0 right-0 h-full w-2 -mr-1 cursor-col-resize hover:bg-green-400/60 active:bg-green-500/70 z-10" title="拖动以调整列宽"/>
+                  </th>
+                )}
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((item)=>
+                <tr key={item.key} className="border-b border-gray-50 last:border-0 hover:bg-gray-50/50 align-top">
+                  <td className="px-5 py-4">
+                    <code className="inline-block text-xs text-green-700 bg-green-50 px-2 py-0.5 rounded font-mono">{item.key}</code>
+                    <p className="text-sm font-medium text-gray-800 mt-2">{item.label||item.key}</p>
+                    {item.description&&<p className="text-xs text-gray-500 mt-0.5 leading-relaxed">{item.description}</p>}
+                  </td>
+                  <td className="px-5 py-4">
+                    {item.type==="image"?(
+                      item.imageUrl?
+                        <div className="flex items-center gap-3">
+                          <img src={cloudUrlToHttps(item.imageUrl)} alt={item.label} className="w-24 h-14 object-cover rounded border border-gray-200 flex-shrink-0"/>
+                          <span className="text-xs text-gray-500 font-mono break-all line-clamp-2">{item.value}</span>
+                        </div>
+                        :<span className="text-xs text-gray-400">未上传图片</span>
+                    ):(
+                      <span className={`text-sm font-mono text-gray-700 break-all ${item.type==="longtext"?"line-clamp-3":"whitespace-pre-wrap"}`}>{item.value||<span className="text-gray-300">空字符串</span>}</span>
+                    )}
+                  </td>
+                  <td className="px-5 py-4">
+                    <span className="inline-flex text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-600">{typeText[item.type]}</span>
+                  </td>
+                  <td className="px-5 py-4 text-xs text-gray-400 font-mono whitespace-nowrap">{formatCloudTime(item.updateTime)}</td>
+                  <td className="px-5 py-4">
+                    <RowActions layout="inline">
+                      <RowActionButton tone="blue" icon={Edit2} onClick={()=>setEditing(item)}>编辑</RowActionButton>
+                    </RowActions>
+                  </td>
+                </tr>
+              )}
+              {filtered.length===0&&<tr><td colSpan={5} className="px-6 py-16 text-center text-sm text-gray-400">暂无匹配的配置项</td></tr>}
+            </tbody>
+          </table>
+          <div className="px-5 py-3 border-t text-xs text-gray-400">共 {filtered.length} / {items.length} 项配置</div>
+        </div>
+    {editing!==undefined&&<SystemSettingEditor key={(editing&&editing._id)||"new"} initial={editing} onClose={()=>setEditing(undefined)} onSave={async(item)=>{await onSave(item);setEditing(undefined);}} onDelete={async(item)=>{await onDelete(item);setEditing(undefined);}}/>}
+  </div>;
+}
+
+function SystemSettingEditor({initial,onClose,onSave,onDelete}:{initial:SystemSetting|null;onClose:()=>void;onSave:(item:SystemSetting)=>Promise<void>;onDelete?:(item:SystemSetting)=>Promise<void>}){
   const [form,setForm]=useState<SystemSetting>(initial?{...initial}:{key:"",value:"",type:"text",label:"",description:""});
   const [saving,setSaving]=useState(false);
+  const [uploading,setUploading]=useState(false);
+  const [uploadError,setUploadError]=useState("");
+  const [confirmingDelete,setConfirmingDelete]=useState(false);
+  const [deleting,setDeleting]=useState(false);
+  const fileInputRef=useRef<HTMLInputElement>(null);
   const keyLocked=Boolean(initial);
   const validKey=/^[a-z][a-z0-9_]{1,63}$/.test(form.key);
-  const submit=async()=>{if(!validKey)return;setSaving(true);try{await onSave({...form,key:form.key.trim(),label:form.label.trim(),description:form.description?.trim()});}finally{setSaving(false);}};
-  return <div className="fixed inset-0 z-50 flex items-center justify-center"><button className="absolute inset-0 bg-black/40" onClick={onClose}/><div className="relative bg-white rounded-2xl shadow-xl w-full max-w-lg p-6 space-y-4"><div className="flex justify-between"><div><h2 className="font-semibold text-gray-900">{initial?"编辑配置":"新增配置"}</h2><p className="text-xs text-gray-400 mt-1">Value 将以字符串形式保存</p></div><button onClick={onClose}><X size={18}/></button></div><label className="block"><span className="text-xs text-gray-500">Key *</span><input disabled={keyLocked} value={form.key} onChange={(event)=>setForm({...form,key:event.target.value})} placeholder="例如 service_phone" className="mt-1 w-full px-3 py-2 border rounded-lg text-sm font-mono disabled:bg-gray-100"/>{!validKey&&form.key&&<p className="text-xs text-red-500 mt-1">只能使用小写字母、数字和下划线，并以字母开头</p>}</label><div className="grid grid-cols-2 gap-3"><label><span className="text-xs text-gray-500">名称</span><input value={form.label} onChange={(event)=>setForm({...form,label:event.target.value})} className="mt-1 w-full px-3 py-2 border rounded-lg text-sm"/></label><label><span className="text-xs text-gray-500">类型</span><select value={form.type} onChange={(event)=>setForm({...form,type:event.target.value as SystemSetting["type"]})} className="mt-1 w-full px-3 py-2 border rounded-lg text-sm bg-white"><option value="text">文本</option><option value="number">数字</option><option value="boolean">布尔</option><option value="image">图片 FileID</option></select></label></div><label className="block"><span className="text-xs text-gray-500">Value</span>{form.type==="boolean"?<select value={form.value} onChange={(event)=>setForm({...form,value:event.target.value})} className="mt-1 w-full px-3 py-2 border rounded-lg text-sm bg-white"><option value="true">true</option><option value="false">false</option></select>:<textarea rows={4} value={form.value} onChange={(event)=>setForm({...form,value:event.target.value})} className="mt-1 w-full px-3 py-2 border rounded-lg text-sm font-mono resize-y" placeholder={form.type==="image"?"cloud://...":"配置值"}/>}</label><label className="block"><span className="text-xs text-gray-500">说明</span><textarea rows={2} value={form.description||""} onChange={(event)=>setForm({...form,description:event.target.value})} className="mt-1 w-full px-3 py-2 border rounded-lg text-sm resize-none"/></label><div className="flex justify-end gap-2"><button onClick={onClose} className="px-4 py-2 text-sm text-gray-500">取消</button><button disabled={saving||!validKey} onClick={()=>void submit()} className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm disabled:opacity-40">{saving?"保存中…":"保存"}</button></div></div></div>;
+  const isBanner=/^home_banner(?:_\d+)?$/.test(form.key);
+  const submit=async()=>{
+    if(!validKey||uploading||(form.type==="image"&&!form.value))return;
+    setSaving(true);
+    try{
+      await onSave({...form,key:form.key.trim(),label:form.label.trim(),description:form.description?.trim()});
+    }finally{
+      setSaving(false);
+    }
+  };
+  const uploadImage=async(file?:File)=>{
+    if(!file)return;
+    setUploadError("");
+    if(!validKey){setUploadError("请先填写有效的配置 Key");return;}
+    if(!["image/jpeg","image/png","image/webp"].includes(file.type)){setUploadError("仅支持 JPG、PNG、WebP 图片");return;}
+    if(file.size>10*1024*1024){setUploadError("图片不能超过 10MB");return;}
+    setUploading(true);
+    try{
+      const fileID=await uploadSystemImage(form.key,file);
+      setForm((current)=>({...current,value:fileID,imageUrl:URL.createObjectURL(file)}));
+    }catch{
+      setUploadError("上传失败，请检查云存储权限后重试");
+    }finally{
+      setUploading(false);
+      if(fileInputRef.current)fileInputRef.current.value="";
+    }
+  };
+  // 二次确认 3 秒内不点 → 自动复原
+  useEffect(()=>{
+    if(!confirmingDelete)return;
+    const timer=setTimeout(()=>setConfirmingDelete(false),3000);
+    return()=>clearTimeout(timer);
+  },[confirmingDelete]);
+  const handleDeleteClick=async()=>{
+    if(!initial||!onDelete)return;
+    if(!confirmingDelete){setConfirmingDelete(true);return;}
+    setDeleting(true);
+    try{
+      await onDelete(initial);
+    }finally{
+      setDeleting(false);
+      setConfirmingDelete(false);
+    }
+  };
+  return <div className="fixed inset-0 z-50 flex items-center justify-center">
+    <button className="absolute inset-0 bg-black/40" onClick={onClose}/>
+    <div className="relative bg-white rounded-2xl shadow-xl w-full max-w-lg p-6 space-y-4">
+      <div className="flex justify-between">
+        <div><h2 className="font-semibold text-gray-900">{initial?"编辑配置":"新增配置"}</h2><p className="text-xs text-gray-400 mt-1">图片类型会自动上传至云存储并保存 FileID</p></div>
+        <button onClick={onClose}><X size={18}/></button>
+      </div>
+      <label className="block">
+        <span className="text-xs text-gray-500">Key *</span>
+        <input disabled={keyLocked} value={form.key} onChange={(event)=>setForm({...form,key:event.target.value})} placeholder="例如 home_banner_2" className="mt-1 w-full px-3 py-2 border rounded-lg text-sm font-mono disabled:bg-gray-100"/>
+        {!validKey&&form.key&&<p className="text-xs text-red-500 mt-1">只能使用小写字母、数字和下划线，并以字母开头</p>}
+      </label>
+      <div className="grid grid-cols-2 gap-3">
+        <label><span className="text-xs text-gray-500">名称</span><input value={form.label} onChange={(event)=>setForm({...form,label:event.target.value})} className="mt-1 w-full px-3 py-2 border rounded-lg text-sm"/></label>
+        <label><span className="text-xs text-gray-500">类型</span><select value={form.type} onChange={(event)=>setForm({...form,type:event.target.value as SystemSetting["type"]})} className="mt-1 w-full px-3 py-2 border rounded-lg text-sm bg-white"><option value="text">文本</option><option value="number">数字</option><option value="boolean">布尔</option><option value="image">图片上传</option><option value="longtext">长文本</option></select></label>
+      </div>
+      {form.type==="image"?<div>
+        <span className="text-xs text-gray-500">图片文件 *</span>
+        <input ref={fileInputRef} type="file" accept="image/jpeg,image/png,image/webp" className="hidden" onChange={(event)=>void uploadImage(event.target.files?.[0])}/>
+        <button type="button" onClick={()=>fileInputRef.current?.click()} disabled={uploading} className="mt-1 w-full min-h-40 rounded-xl border-2 border-dashed border-gray-200 bg-gray-50 hover:border-green-300 overflow-hidden disabled:opacity-60">
+          {form.imageUrl?<div className="relative"><img src={form.imageUrl} alt="配置图片预览" className="w-full h-40 object-cover"/><span className="absolute right-2 bottom-2 px-2 py-1 rounded bg-black/60 text-white text-xs">{uploading?"上传中…":"点击更换"}</span></div>:<div className="h-40 flex flex-col items-center justify-center gap-2 text-gray-400"><Upload size={24}/><span className="text-sm">{uploading?"正在上传…":"点击选择图片"}</span><span className="text-xs">JPG / PNG / WebP，最大 10MB</span></div>}
+        </button>
+        {isBanner&&<p className="text-xs text-gray-400 mt-2">首页 Banner 建议使用 5:3 横图；轮播图 Key 依次使用 home_banner、home_banner_2、home_banner_3。</p>}
+        {form.value&&<p className="mt-2 text-[11px] text-gray-400 font-mono truncate" title={form.value}>{form.value}</p>}
+        {uploadError&&<p className="text-xs text-red-500 mt-2">{uploadError}</p>}
+      </div>:<label className="block">
+        <span className="text-xs text-gray-500">Value</span>
+        {form.type==="boolean"?<select value={form.value} onChange={(event)=>setForm({...form,value:event.target.value})} className="mt-1 w-full px-3 py-2 border rounded-lg text-sm bg-white"><option value="true">true</option><option value="false">false</option></select>:<textarea rows={form.type==="longtext"?14:4} value={form.value} onChange={(event)=>setForm({...form,value:event.target.value})} className={`mt-1 w-full px-3 py-2 border rounded-lg text-sm ${form.type==="longtext"?"font-sans":"font-mono"} resize-y`} placeholder={form.type==="longtext"?"请输入完整条款内容，支持换行…":"配置值"}/>}
+      </label>}
+      <label className="block"><span className="text-xs text-gray-500">说明</span><textarea rows={2} value={form.description||""} onChange={(event)=>setForm({...form,description:event.target.value})} className="mt-1 w-full px-3 py-2 border rounded-lg text-sm resize-none"/></label>
+      <div className="flex items-center gap-2">
+        {initial&&onDelete&&(
+          <button type="button" onClick={()=>void handleDeleteClick()} disabled={deleting} className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm transition-colors disabled:opacity-50 mr-auto ${confirmingDelete?"bg-red-600 text-white hover:bg-red-700":"text-red-500 hover:bg-red-50"}`}>
+            <Trash2 size={14}/>
+            {deleting?"删除中…":confirmingDelete?"确认删除？":(initial._id?.startsWith("virtual:")?"移除默认":"删除")}
+          </button>
+        )}
+        <button onClick={onClose} className="px-4 py-2 text-sm text-gray-500">取消</button>
+        <button disabled={saving||uploading||!validKey||(form.type==="image"&&!form.value)} onClick={()=>void submit()} className="px-4 py-2 rounded-lg bg-green-600 text-white text-sm disabled:opacity-40">{uploading?"上传中…":saving?"保存中…":"保存"}</button>
+      </div>
+    </div>
+  </div>;
 }
 
 // ─── Login ────────────────────────────────────────────────────────────────────
@@ -1440,7 +2213,7 @@ function LoginPage({ onLogin }:{ onLogin:()=>void }) {
       <div className="relative z-10 w-full max-w-[400px] mx-4">
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-4" style={{background:"rgba(46,204,113,0.2)",border:"1px solid rgba(46,204,113,0.3)"}}><RefreshCw size={30} className="text-green-400"/></div>
-          <h1 className="text-2xl font-bold text-white tracking-wide">绿源废品回收</h1>
+          <h1 className="text-2xl font-bold text-white tracking-wide">帮帮回收</h1>
           <p className="text-green-300 text-sm mt-1 opacity-80">后台管理系统</p>
         </div>
         <div className="bg-white rounded-2xl p-8 shadow-2xl">
@@ -1598,7 +2371,7 @@ function AnalyticsPage({ orders }:{ orders:Order[] }) {
       </div>
 
       {/* KPI Cards */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-2 gap-3 md:gap-4">
         {kpis.map(({label,value,sub,icon:Icon,color,bg})=>(
           <div key={label} className="bg-white rounded-xl p-5 border border-gray-100 flex items-start justify-between">
             <div>
@@ -1614,9 +2387,9 @@ function AnalyticsPage({ orders }:{ orders:Order[] }) {
       </div>
 
       {/* Trend + Status Row */}
-      <div className="grid grid-cols-5 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3 md:gap-4">
         {/* Order Trend */}
-        <div className="col-span-3 bg-white rounded-xl p-5 border border-gray-100">
+        <div className="col-span-1 md:col-span-3 bg-white rounded-xl p-3 md:p-5 border border-gray-100">
           <div className="flex items-center justify-between mb-4">
             <div>
               <p className="text-sm font-semibold text-gray-800">订单趋势</p>
@@ -1645,7 +2418,7 @@ function AnalyticsPage({ orders }:{ orders:Order[] }) {
         </div>
 
         {/* Status Pie */}
-        <div className="col-span-2 bg-white rounded-xl p-5 border border-gray-100">
+        <div className="col-span-1 md:col-span-2 bg-white rounded-xl p-3 md:p-5 border border-gray-100">
           <p className="text-sm font-semibold text-gray-800 mb-1">订单状态分布</p>
           <p className="text-xs text-gray-400 mb-3">各状态占比</p>
           {statusData.length===0
@@ -1679,9 +2452,9 @@ function AnalyticsPage({ orders }:{ orders:Order[] }) {
       </div>
 
       {/* Category + Recycler Row */}
-      <div className="grid grid-cols-2 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-2 gap-3 md:gap-4">
         {/* Category Bar */}
-        <div className="bg-white rounded-xl p-5 border border-gray-100">
+        <div className="bg-white rounded-xl p-3 md:p-5 border border-gray-100">
           <p className="text-sm font-semibold text-gray-800 mb-0.5">品类订单分布</p>
           <p className="text-xs text-gray-400 mb-4">各品类订单数量</p>
           {catData.length===0
@@ -1701,7 +2474,7 @@ function AnalyticsPage({ orders }:{ orders:Order[] }) {
         </div>
 
         {/* Recycler Bar */}
-        <div className="bg-white rounded-xl p-5 border border-gray-100">
+        <div className="bg-white rounded-xl p-3 md:p-5 border border-gray-100">
           <p className="text-sm font-semibold text-gray-800 mb-0.5">回收员业绩</p>
           <p className="text-xs text-gray-400 mb-4">接单量 vs 完成量</p>
           {recyclerData.length===0
@@ -1721,8 +2494,41 @@ function AnalyticsPage({ orders }:{ orders:Order[] }) {
         </div>
       </div>
 
-      {/* Completed Orders Table */}
-      <div className="bg-white rounded-xl border border-gray-100 overflow-hidden">
+      {/* Completed Orders - Mobile Cards */}
+      <div className="md:hidden">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <p className="text-sm font-semibold text-gray-800">已完成订单明细</p>
+            <p className="text-xs text-gray-400 mt-0.5">有回收金额的已结算订单</p>
+          </div>
+          <span className="text-xs text-gray-400 bg-gray-100 px-2.5 py-1 rounded-full font-medium">{completedOrders.filter(o=>o.amount).length} 笔</span>
+        </div>
+        <div className="space-y-2">
+          {completedOrders.filter(o=>o.amount).length===0
+            ?<div className="bg-white rounded-xl p-8 text-center text-sm text-gray-400 border border-gray-100">当前筛选范围内无已结算订单</div>
+            :completedOrders.filter(o=>o.amount).sort((a,b)=>(b.amount||0)-(a.amount||0)).map(o=>(
+              <div key={o.id} className="bg-white rounded-xl p-4 border border-gray-100">
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs font-mono text-gray-500">{o.id.slice(0,12)}…</span>
+                  <span className="text-sm font-bold text-green-700">¥{(o.amount||0).toFixed(2)}</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-gray-600 mb-1.5">
+                  <span>{o.userName}</span>
+                  <span className="text-gray-300">·</span>
+                  <span className="px-2 py-0.5 rounded-full bg-green-50 text-green-700 border border-green-100 font-medium">{o.category}</span>
+                </div>
+                <div className="flex items-center justify-between text-xs text-gray-400 pt-2 border-t border-gray-50">
+                  <div className="flex flex-wrap gap-1">{o.recyclers.map(r=><span key={r} className="px-1.5 py-0.5 bg-gray-100 text-gray-600 rounded">{r}</span>)}</div>
+                  <span>{o.completedAt||"—"}</span>
+                </div>
+              </div>
+            ))
+          }
+        </div>
+      </div>
+
+      {/* Completed Orders Table - Desktop */}
+      <div className="hidden md:block bg-white rounded-xl border border-gray-100 overflow-hidden">
         <div className="flex items-center justify-between px-5 py-4 border-b border-gray-100">
           <div>
             <p className="text-sm font-semibold text-gray-800">已完成订单明细</p>
@@ -1758,69 +2564,172 @@ function AnalyticsPage({ orders }:{ orders:Order[] }) {
 }
 
 // ─── Main Layout ──────────────────────────────────────────────────────────────
-function AdminOrderDetailPage({id,token,onBack,onError}:{id:string;token:string;onBack:()=>void;onError:(error:unknown)=>void}){
+function AdminOrderDetailPage({id,token,staff,onSaveOrder,onBack,onError}:{id:string;token:string;staff:Staff[];onSaveOrder:(order:Order)=>Promise<void>;onBack:()=>void;onError:(error:unknown)=>void}){
+  const [editing,setEditing]=useState(false);
   const [order,setOrder]=useState<CloudOrder|null>(null);
   const [loading,setLoading]=useState(true);
-  useEffect(()=>{
-    let active=true;
+  const reload=useCallback(async()=>{
     setLoading(true);
-    callCloud<CloudOrder>("adminGetOrderDetail",{sessionToken:token,id})
-      .then((data)=>{if(active)setOrder(data);})
-      .catch(onError)
-      .finally(()=>{if(active)setLoading(false);});
-    return()=>{active=false;};
+    try{
+      const data=await callCloud<CloudOrder>("adminGetOrderDetail",{sessionToken:token,id});
+      setOrder(data);
+    }catch(error){onError(error);}
+    finally{setLoading(false);}
   },[id,token,onError]);
+  useEffect(()=>{void reload();},[reload]);
   if(loading)return <div className="min-h-[520px] flex items-center justify-center gap-3 text-gray-400"><Loader size={22} className="animate-spin text-green-600"/><span className="text-sm">正在读取订单详情…</span></div>;
   if(!order)return <div className="p-6"><button onClick={onBack} className="text-sm text-green-700">← 返回订单列表</button><div className="mt-8 bg-white rounded-xl p-12 text-center text-gray-400">订单不存在或加载失败</div></div>;
   const address=order.addressSnapshot||{};
   const status=CLOUD_TO_FIGMA_STATUS[order.status]||"待接单";
-  return <div className="p-6 space-y-5 max-w-6xl mx-auto">
-    <div className="flex items-center justify-between"><div><button onClick={onBack} className="text-sm text-green-700 hover:text-green-900 mb-2">← 返回订单列表</button><div className="flex items-center gap-3"><h1 className="text-xl font-semibold text-gray-900">订单详情</h1><StatusBadge status={status}/></div><p className="text-xs text-gray-400 font-mono mt-1">{order.orderNo}</p></div><div className="text-right text-xs text-gray-400"><p>创建时间</p><p className="font-mono mt-1">{formatCloudTime(order.createTime)}</p></div></div>
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-      <section className="bg-white rounded-xl border border-gray-100 p-5 space-y-4"><h2 className="font-semibold text-gray-800">联系人与预约</h2><div className="grid grid-cols-2 gap-4 text-sm"><DetailField label="联系人" value={address.contactName}/><DetailField label="联系电话" value={address.phone}/><DetailField label="预约日期" value={order.appointDate}/><DetailField label="预约时段" value={order.appointSlot}/><div className="col-span-2"><DetailField label="上门地址" value={[address.region,address.detail].filter(Boolean).join(" ")}/></div></div></section>
-      <section className="bg-white rounded-xl border border-gray-100 p-5 space-y-4"><h2 className="font-semibold text-gray-800">订单信息</h2><div className="grid grid-cols-2 gap-4 text-sm"><DetailField label="提交方式" value={order.source==="photo"?"拍照提交":"品类下单"}/><DetailField label="最后修改" value={formatCloudTime(order.updateTime)}/><div className="col-span-2"><DetailField label="物品摘要" value={order.summary}/></div><div className="col-span-2"><DetailField label="用户备注" value={order.remark}/></div></div></section>
-      <section className="bg-white rounded-xl border border-gray-100 p-5 space-y-4"><h2 className="font-semibold text-gray-800">物品明细</h2>{order.items&&order.items.length>0?<div className="divide-y divide-gray-100">{order.items.map((item,index)=><div key={`${item.categoryName}-${index}`} className="py-3 flex justify-between text-sm"><span className="font-medium text-gray-700">{item.categoryName||"未命名品类"}</span><span className="text-gray-500">{item.estWeight?`约 ${item.estWeight} kg`:item.estCount?`约 ${item.estCount} 件`:"待现场确认"}</span></div>)}</div>:<p className="text-sm text-gray-400">拍照订单，无结构化物品明细</p>}</section>
-      <section className="bg-white rounded-xl border border-gray-100 p-5 space-y-4"><h2 className="font-semibold text-gray-800">处理结果</h2><div className="grid grid-cols-2 gap-4 text-sm"><DetailField label="平台估价" value={order.estimatePrice==null?"—":`¥${Number(order.estimatePrice).toFixed(2)}`}/><DetailField label="最终金额" value={order.finalPrice==null?"—":`¥${Number(order.finalPrice).toFixed(2)}`}/><DetailField label="实际重量" value={order.finalWeight==null?"—":`${order.finalWeight} kg`}/><DetailField label="实际件数" value={order.finalCount==null?"—":`${order.finalCount} 件`}/><DetailField label="回收人员" value={order.recyclerName}/><DetailField label="人员电话" value={order.recyclerPhone}/><div className="col-span-2"><DetailField label="管理备注" value={order.adminRemark}/></div>{order.cancelReason&&<div className="col-span-2"><DetailField label="取消原因" value={order.cancelReason}/></div>}</div></section>
+  const businessOrderType=resolveBusinessOrderType(order);
+  const detailItems=order.source==="demolition"
+    ? (order.demolition?.items||[]).map((name)=>({categoryName:name,demolition:true,estWeight:undefined,estCount:undefined}))
+    : (order.items||[]).map((item)=>({...item,demolition:false}));
+  return <div className="p-4 md:p-6 space-y-4 md:space-y-5 max-w-6xl mx-auto">
+    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between"><div><button onClick={onBack} className="text-sm text-green-700 hover:text-green-900 mb-2">← 返回订单列表</button><div className="flex items-center gap-2 flex-wrap"><h1 className="text-lg md:text-xl font-semibold text-gray-900">订单详情</h1><OrderTypeBadge type={businessOrderType}/><StatusBadge status={status}/></div><p className="text-xs text-gray-400 font-mono mt-1">{order.orderNo}</p></div><div className="flex items-center justify-between gap-3"><button onClick={()=>setEditing(true)} className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-medium text-white hover:opacity-90" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}><Edit2 size={14}/>编辑</button><div className="text-right text-xs text-gray-400"><p>创建时间</p><p className="font-mono mt-1">{formatCloudTime(order.createTime)}</p></div></div></div>
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-5">
+      <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">联系人与预约</h2><div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 text-sm"><DetailField label="联系人" value={address.contactName}/><DetailField label="联系电话" value={address.phone}/><DetailField label="预约日期" value={order.appointDate}/><DetailField label="预约时段" value={order.appointSlot}/><div className="md:col-span-2"><DetailField label="上门地址" value={[address.region,address.detail].filter(Boolean).join(" ")}/></div></div></section>
+      <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">订单信息</h2><div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 text-sm"><DetailField label="订单类型" value={ORDER_TYPE_LABEL[businessOrderType]}/><DetailField label="最后修改" value={formatCloudTime(order.updateTime)}/><div className="md:col-span-2"><DetailField label="物品摘要" value={order.summary}/></div><div className="md:col-span-2"><DetailField label="用户备注" value={order.remark}/></div></div></section>
+      <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">物品明细</h2>{detailItems.length>0?<div className="divide-y divide-gray-100">{detailItems.map((item,index)=><div key={`${item.categoryName}-${index}`} className="py-3 flex justify-between text-sm"><span className="font-medium text-gray-700">{item.categoryName||"未命名项目"}</span><span className="text-gray-500">{item.demolition?"拆除评估":item.estWeight?`约 ${item.estWeight} kg`:item.estCount?`约 ${item.estCount} 件`:"待现场确认"}</span></div>)}</div>:<p className="text-sm text-gray-400">暂无结构化物品明细</p>}</section>
+      <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">处理结果</h2><div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 text-sm"><DetailField label="平台估价" value={order.estimatePrice==null?"—":`¥${Number(order.estimatePrice).toFixed(2)}`}/><DetailField label="最终金额" value={order.finalPrice==null?"—":`¥${Number(order.finalPrice).toFixed(2)}`}/><DetailField label="实际重量" value={order.finalWeight==null?"—":`${order.finalWeight} kg`}/><DetailField label="实际件数" value={order.finalCount==null?"—":`${order.finalCount} 件`}/><DetailField label="回收人员" value={order.recyclerName}/><DetailField label="人员电话" value={order.recyclerPhone}/><div className="md:col-span-2"><DetailField label="管理备注" value={order.adminRemark}/></div>{order.cancelReason&&<div className="md:col-span-2"><DetailField label="取消原因" value={order.cancelReason}/></div>}</div></section>
     </div>
-    <section className="bg-white rounded-xl border border-gray-100 p-5 space-y-4"><h2 className="font-semibold text-gray-800">物品照片</h2>{order.photoUrls&&order.photoUrls.length>0?<div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">{order.photoUrls.map((url,index)=><a key={url} href={url} target="_blank" rel="noreferrer"><img src={url} alt={`物品照片 ${index+1}`} className="w-full aspect-square object-cover rounded-lg border border-gray-100"/></a>)}</div>:<p className="text-sm text-gray-400">暂无物品照片</p>}</section>
-    {order.transferProofUrls&&order.transferProofUrls.length>0&&<section className="bg-white rounded-xl border border-gray-100 p-5 space-y-4"><h2 className="font-semibold text-gray-800">打款凭证</h2><div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">{order.transferProofUrls.map((url,index)=><a key={url} href={url} target="_blank" rel="noreferrer"><img src={url} alt={`打款凭证 ${index+1}`} className="w-full aspect-square object-cover rounded-lg border border-gray-100"/></a>)}</div></section>}
+    <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">物品照片</h2>{order.photoUrls&&order.photoUrls.length>0?<div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">{order.photoUrls.map((url,index)=><a key={url} href={cloudUrlToHttps(url)} target="_blank" rel="noreferrer"><img src={cloudUrlToHttps(url)} alt={`物品照片 ${index+1}`} className="w-full aspect-square object-cover rounded-lg border border-gray-100"/></a>)}</div>:<p className="text-sm text-gray-400">暂无物品照片</p>}</section>
+    {order.transferProofUrls&&order.transferProofUrls.length>0&&<section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">打款凭证</h2><div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">{order.transferProofUrls.map((url,index)=><a key={url} href={cloudUrlToHttps(url)} target="_blank" rel="noreferrer"><img src={cloudUrlToHttps(url)} alt={`打款凭证 ${index+1}`} className="w-full aspect-square object-cover rounded-lg border border-gray-100"/></a>)}</div></section>}
+    {editing&&<OrderEditModal order={cloudOrderToFigma(order)} staff={staff} onSave={async(o)=>{try{await onSaveOrder(o);setEditing(false);await reload();}catch{setEditing(false);}}} onClose={()=>setEditing(false)}/>}
+  </div>;
+}
+
+// ─── User Detail Page ─────────────────────────────────────────────────────────
+function UserDetailPage({userId,token,onBack,onViewOrder,onError}:{userId:string;token:string;onBack:()=>void;onViewOrder:(id:string)=>void;onError:(error:unknown)=>void}){
+  const [data,setData]=useState<{user:UserRecord&{openid?:string};addresses:Array<{_id:string;contactName?:string;phone?:string;region?:string;detail?:string;isDefault?:boolean;createTime?:number}>;orders:Array<{_id:string;orderNo?:string;status:string;estimatePrice?:number;finalPrice?:number;appointDate?:string;appointSlot?:string;summary?:string;createTime?:number}>}|null>(null);
+  const [loading,setLoading]=useState(true);
+  const reload=useCallback(async()=>{
+    setLoading(true);
+    try{
+      const result=await callCloud<typeof data>("adminUserDetail",{sessionToken:token,userId});
+      setData(result||null);
+    }catch(error){onError(error);}
+    finally{setLoading(false);}
+  },[userId,token,onError]);
+  useEffect(()=>{void reload();},[reload]);
+  if(loading)return <div className="min-h-[520px] flex items-center justify-center gap-3 text-gray-400"><Loader size={22} className="animate-spin text-green-600"/><span className="text-sm">正在读取用户详情…</span></div>;
+  if(!data||!data.user)return <div className="p-6"><button onClick={onBack} className="text-sm text-green-700">← 返回人员管理</button><div className="mt-8 bg-white rounded-xl p-12 text-center text-gray-400">用户不存在或加载失败</div></div>;
+  const {user,addresses,orders}=data;
+  return <div className="p-4 md:p-6 space-y-4 md:space-y-5 max-w-6xl mx-auto">
+    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+      <div>
+        <button onClick={onBack} className="text-sm text-green-700 hover:text-green-900 mb-2">← 返回人员管理</button>
+        <div className="flex items-center gap-3 flex-wrap">
+          {user.avatarUrl?<img src={cloudUrlToHttps(user.avatarUrl)} className="w-10 h-10 rounded-full"/>:<div className="w-10 h-10 rounded-full bg-green-100 text-green-700 flex items-center justify-center"><User size={18}/></div>}
+          <div><h1 className="text-lg md:text-xl font-semibold text-gray-900">{user.nickName||"微信用户"}</h1>
+          <p className="text-xs text-gray-400 font-mono">{user.phone||"未绑定手机"}</p></div>
+          <span className={`inline-flex rounded-full px-2 py-0.5 text-xs ${user.wechatBound?"bg-green-50 text-green-700":"bg-gray-100 text-gray-500"}`}>{user.wechatBound?"已绑定":"未绑定"}</span>
+        </div>
+      </div>
+      <div className="text-right text-xs text-gray-400"><p>注册时间</p><p className="font-mono mt-1">{formatCloudTime(user.createTime)}</p></div>
+    </div>
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-5">
+      <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4">
+        <h2 className="font-semibold text-gray-800 flex items-center gap-2"><MapPin size={16} className="text-green-600"/>收货地址（{addresses.length}）</h2>
+        {addresses.length===0?<p className="text-sm text-gray-400">暂无地址</p>:
+        <div className="space-y-3">{addresses.map(a=>(
+          <div key={a._id} className="bg-gray-50 rounded-lg p-3 space-y-1">
+            <div className="flex items-center gap-2"><span className="text-sm font-medium text-gray-700">{a.contactName||"未填写"}</span><span className="text-xs font-mono text-gray-500">{a.phone||""}</span>{a.isDefault&&<span className="inline-flex rounded-full px-1.5 py-0.5 text-xs bg-green-50 text-green-700">默认</span>}</div>
+            <p className="text-xs text-gray-500">{[a.region,a.detail].filter(Boolean).join(" ")||"无详细地址"}</p>
+            <p className="text-xs text-gray-400">{formatCloudTime(a.createTime)}</p>
+          </div>
+        ))}</div>}
+      </section>
+      <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4">
+        <h2 className="font-semibold text-gray-800 flex items-center gap-2"><Package size={16} className="text-green-600"/>订单记录（{orders.length}）</h2>
+        {orders.length===0?<p className="text-sm text-gray-400">暂无订单</p>:
+        <div className="space-y-2">{orders.map(o=>{
+          const fStatus=CLOUD_TO_FIGMA_STATUS[o.status as CloudOrderStatus]||"待接单";
+          return <div key={o._id} onClick={()=>onViewOrder(o._id)} className="bg-gray-50 rounded-lg p-3 cursor-pointer hover:bg-gray-100 transition-colors">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-mono text-gray-500 truncate">{o.orderNo||o._id}</span>
+              <StatusBadge status={fStatus}/>
+            </div>
+            <div className="flex items-center justify-between text-xs text-gray-500">
+              <span>{o.appointDate||"未预约"} {o.appointSlot||""}</span>
+              <span className="font-medium text-gray-700">{o.finalPrice!=null?`¥${Number(o.finalPrice).toFixed(2)}`:o.estimatePrice!=null?`估 ¥${Number(o.estimatePrice).toFixed(2)}`:"待估价"}</span>
+            </div>
+            <p className="text-xs text-gray-400 mt-1">{o.summary||"无摘要"}</p>
+            <p className="text-xs text-gray-400">{formatCloudTime(o.createTime)}</p>
+          </div>;
+        })}</div>}
+      </section>
+    </div>
   </div>;
 }
 
 function DetailField({label,value}:{label:string;value?:string|null}){return <div><p className="text-xs text-gray-400 mb-1">{label}</p><p className="text-sm text-gray-700 break-words">{value||"—"}</p></div>;}
 
 const NAV=[
-  {id:"orders"    as Page, label:"订单管理", icon:Package  },
-  {id:"staff"     as Page, label:"人员管理", icon:Users    },
-  {id:"cats"      as Page, label:"品类管理", icon:Tags     },
-  {id:"analytics" as Page, label:"分析统计", icon:BarChart2},
-  {id:"system"    as Page, label:"系统配置", icon:Settings },
+  {id:"orders"    as Page, path:"/orders",     label:"订单管理", icon:Package  },
+  {id:"staff"     as Page, path:"/staff",      label:"人员管理", icon:Users    },
+  {id:"cats"      as Page, path:"/categories", label:"品类管理", icon:Tags     },
+  {id:"analytics" as Page, path:"/analytics",  label:"分析统计", icon:BarChart2},
+  {id:"system"    as Page, path:"/settings",   label:"系统配置", icon:Settings },
 ];
+
+const pageFromPath=(pathname:string):Page|null=>{
+  if(pathname==="/orders"||pathname.startsWith("/orders/"))return "orders";
+  if(pathname==="/staff"||pathname.startsWith("/users/"))return "staff";
+  if(pathname==="/categories"||pathname==="/cats")return "cats";
+  if(pathname==="/analytics")return "analytics";
+  if(pathname==="/settings"||pathname==="/system")return "system";
+  return null;
+};
 
 function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps) {
   const navigate=useNavigate();
   const location=useLocation();
   const detailMatch=location.pathname.match(/^\/orders\/([^/]+)$/);
   const detailId=detailMatch?decodeURIComponent(detailMatch[1]):"";
-  const [page,setPage]=useState<Page>("orders");
+  const userDetailMatch=location.pathname.match(/^\/users\/([^/]+)$/);
+  const userDetailId=userDetailMatch?decodeURIComponent(userDetailMatch[1]):"";
+  const [page,setPage]=useState<Page>(()=>pageFromPath(location.pathname)||"orders");
   const [orders,setOrders]=useState<Order[]>([]);
   const [users,setUsers]=useState<UserRecord[]>([]);
   const [staff,setStaff]=useState<Staff[]>([]);
+  const [admins,setAdmins]=useState<AdminRecord[]>([]);
   const [groups,setGroups]=useState<RecycleGroup[]>([]);
+  const [categoryTree,setCategoryTree]=useState<CategoryNode[]>([]);
   const [systemSettings,setSystemSettings]=useState<SystemSetting[]>([]);
   const [loading,setLoading]=useState(true);
+  const [mobileMenuOpen,setMobileMenuOpen]=useState(false);
+
+  useEffect(()=>{
+    const routedPage=pageFromPath(location.pathname);
+    if(routedPage){
+      setPage(routedPage);
+      if(location.pathname==="/cats")navigate("/categories",{replace:true});
+      if(location.pathname==="/system")navigate("/settings",{replace:true});
+      return;
+    }
+    navigate("/orders",{replace:true});
+  },[location.pathname,navigate]);
+
+  const loadSystemSettings=async()=>{
+    try{
+      return await callCloud<SystemSetting[]>("adminListSystemSettings",{sessionToken:token});
+    }catch{
+      const legacy=await callCloud<LegacyRecycleSettings>("adminGetSettings",{sessionToken:token});
+      return legacySettingsToSystemSettings(legacy);
+    }
+  };
+
+  const loadCategories=async()=>{
+    return callCloud<CloudCategory[]>("adminListCategories",{sessionToken:token});
+  };
 
   const refresh=async()=>{
     setLoading(true);
-    try{
-      const [firstOrderPage,categories,categoryGroups,settingsList,userList,staffList]=await Promise.all([
-        callCloud<OrderListResult>("adminListOrders",{sessionToken:token,page:1,pageSize:50,status:"",keyword:""}),
-        callCloud<CloudCategory[]>("adminListCategories",{sessionToken:token}),
-        callCloud<CloudCategoryGroup[]>("adminListCategoryGroups",{sessionToken:token}),
-        callCloud<SystemSetting[]>("adminListSystemSettings",{sessionToken:token}),
-        callCloud<UserRecord[]>("adminListUsers",{sessionToken:token}),
-        callCloud<StaffRecord[]>("adminListStaff",{sessionToken:token}),
-      ]);
+    try {
+      // 订单是管理端的核心数据，独立加载，避免某个辅助接口尚未部署时整页变成空数据。
+      try {
+        const firstOrderPage=await callCloud<OrderListResult>("adminListOrders",{sessionToken:token,page:1,pageSize:50,status:"",keyword:""});
       const orderPages=[...(firstOrderPage.list||[])];
       const pageCount=Math.ceil(firstOrderPage.total/50);
       if(pageCount>1){
@@ -1834,11 +2743,32 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
         catch{return order;}
       }));
       setOrders(details.map(cloudOrderToFigma));
-      setUsers(userList||[]);
-      setStaff(staffFromCloud(staffList||[]));
-      setGroups(categoriesToGroups(categories||[],categoryGroups||[]));
-      setSystemSettings(settingsList||[]);
-    }catch(error){onError(error);}finally{setLoading(false);}
+      } catch(error) {
+        setOrders([]);
+        onError(error);
+      }
+
+      const [categoriesResult,settingsResult,usersResult,staffResult,adminsResult]=await Promise.allSettled([
+        loadCategories(),
+        loadSystemSettings(),
+        callCloud<UserRecord[]>("adminListUsers",{sessionToken:token}),
+        callCloud<StaffRecord[]>("adminListStaff",{sessionToken:token}),
+        callCloud<AdminRecord[]>("adminListAdmins",{sessionToken:token}),
+      ]);
+      if(categoriesResult.status==="fulfilled"){
+        const categories=categoriesResult.value||[];
+        setGroups(categoriesToGroups(categories));
+        setCategoryTree(categoriesToTree(categories));
+      }
+      if(settingsResult.status==="fulfilled")setSystemSettings(settingsResult.value||[]);
+      if(usersResult.status==="fulfilled")setUsers(usersResult.value||[]);
+      if(staffResult.status==="fulfilled")setStaff(staffFromCloud(staffResult.value||[]));
+      if(adminsResult.status==="fulfilled")setAdmins(adminsResult.value||[]);
+
+      const failedAuxiliary=[categoriesResult,settingsResult,usersResult,staffResult]
+        .find((result)=>result.status==="rejected");
+      if(failedAuxiliary?.status==="rejected")onError(failedAuxiliary.reason);
+    }finally{setLoading(false);}
   };
 
   useEffect(()=>{void refresh();},[token]);
@@ -1848,12 +2778,38 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
   const saveStaff=async(item:Staff)=>{
     try{
       await callCloud("adminSaveStaff",{sessionToken:token,staff:{
-        _id:item.docId,employeeNo:item.id,openid:item.openid,name:item.name,phone:item.phone,
+        _id:item.docId,employeeNo:item.id,name:item.name,phone:item.phone,
         status:item.status,joinDate:item.joinDate==="—"?"":item.joinDate,area:item.area==="—"?"":item.area,store:item.store==="—"?"":item.store,
       }});
       const list=await callCloud<StaffRecord[]>("adminListStaff",{sessionToken:token});
       setStaff(staffFromCloud(list||[]));
       notify({kind:"success",text:"工作人员已保存"});
+    }catch(error){onError(error);throw error;}
+  };
+
+  const reloadAdmins=async()=>{
+    const list=await callCloud<AdminRecord[]>("adminListAdmins",{sessionToken:token});
+    setAdmins(list||[]);
+  };
+
+  const saveAdmin=async(item:AdminRecord)=>{
+    try{
+      await callCloud("adminSaveAdmin",{sessionToken:token,
+        id:item._id,
+        phone:item.phone,
+        name:item.name,
+        enabled:item.enabled,
+      });
+      await reloadAdmins();
+      notify({kind:"success",text:item._id?"管理员已更新":"管理员已添加"});
+    }catch(error){onError(error);throw error;}
+  };
+
+  const toggleAdmin=async(item:AdminRecord,enabled:boolean)=>{
+    try{
+      await callCloud("adminToggleAdmin",{sessionToken:token,id:item._id,enabled});
+      await reloadAdmins();
+      notify({kind:"success",text:enabled?"已启用":"已停用"});
     }catch(error){onError(error);throw error;}
   };
 
@@ -1902,41 +2858,46 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
   };
 
   const reloadCategories=async()=>{
-    const [categories,categoryGroups]=await Promise.all([
-      callCloud<CloudCategory[]>("adminListCategories",{sessionToken:token}),
-      callCloud<CloudCategoryGroup[]>("adminListCategoryGroups",{sessionToken:token}),
-    ]);
-    setGroups(categoriesToGroups(categories||[],categoryGroups||[]));
+    const categories=await loadCategories();
+    setGroups(categoriesToGroups(categories||[]));
+    setCategoryTree(categoriesToTree(categories||[]));
   };
 
-  const saveCategory=async(item:RecycleItem,gid:string)=>{
-    const unit:CloudCategory["unit"]=item.unit==="件"?"件":"kg";
+  const saveCategoryNode=async(item:RecycleItem)=>{
+    const allowedUnits:CloudCategory["unit"][]=["kg","斤","台","件","双","袋","箱"];
+    const unit=allowedUnits.includes(item.unit as CloudCategory["unit"])?item.unit as CloudCategory["unit"]:"kg";
     const category:CloudCategory={
       _id:item.categoryId,
-      groupId:gid==="cloud-categories"?"":gid,
+      parentId:item.parentId||null,
       name:item.name,
       unit,
-      priceRef:item.fieldEstimate?"现场估价":item.priceRef || `${item.price}元/${unit}起`,
-      sortOrder:item.sortOrder ?? groups.flatMap((group)=>group.items).length+1,
+      priceRef:item.fieldEstimate?"现场估价":item.priceRef||"",
+      sortOrder:item.sortOrder??0,
       enabled:item.enabled,
+      showOnHome:item.parentId?false:item.showOnHome!==false,
+      minVisitKg: typeof item.minVisitKg==="number"?item.minVisitKg:undefined,
     };
     try{
       await callCloud("adminSaveCategory",{sessionToken:token,category});
-      notify({kind:"success",text:"品类已保存"});
+      notify({kind:"success",text:"品类节点已保存"});
       await reloadCategories();
     }catch(error){onError(error);throw error;}
   };
 
-  const saveCategoryGroup=async(group:CloudCategoryGroup)=>{
+  const deleteCategory=async(item:RecycleItem)=>{
+    if(!item.categoryId){
+      onError(new Error("该品类缺少数据库 ID，请刷新后重试"));
+      return;
+    }
     try{
-      await callCloud("adminSaveCategoryGroup",{sessionToken:token,group});
-      notify({kind:"success",text:"品类分组已创建"});
+      await callCloud("adminDeleteCategory",{sessionToken:token,id:item.categoryId});
+      notify({kind:"success",text:"品类节点已逻辑删除"});
       await reloadCategories();
     }catch(error){onError(error);throw error;}
   };
 
   const reloadSystemSettings=async()=>{
-    const list=await callCloud<SystemSetting[]>("adminListSystemSettings",{sessionToken:token});
+    const list=await loadSystemSettings();
     setSystemSettings(list||[]);
   };
 
@@ -1962,39 +2923,47 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
   };
 
   return(
-    <div className="min-h-screen flex" style={{fontFamily:"'Noto Sans SC',sans-serif"}}>
-      <aside className="w-56 flex-shrink-0 flex flex-col" style={{background:"#1e2d1e"}}>
-        <div className="px-5 py-5 border-b" style={{borderColor:"rgba(255,255,255,0.06)"}}>
+    <div className="h-screen flex overflow-hidden" style={{fontFamily:"'Noto Sans SC',sans-serif"}}>
+      {/* 移动端遮罩 */}
+      {mobileMenuOpen&&<div className="fixed inset-0 z-40 bg-black/40 md:hidden" onClick={()=>setMobileMenuOpen(false)}/>}
+      {/* 侧边栏 */}
+      <aside className={`fixed inset-y-0 left-0 z-50 w-60 h-screen flex-shrink-0 flex flex-col bg-white border-r border-gray-100 transition-transform duration-200 md:relative md:translate-x-0 ${mobileMenuOpen?"translate-x-0":"-translate-x-full"}`}>
+        <div className="px-5 py-5 border-b border-gray-100 flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-8 h-8 rounded-xl flex items-center justify-center" style={{background:"rgba(46,204,113,0.2)"}}><RefreshCw size={16} className="text-green-400"/></div>
-            <div><p className="text-white font-semibold text-sm leading-tight">绿源回收</p><p className="text-green-500 text-[10px] opacity-70">管理后台 v1.0</p></div>
+            <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-green-50"><RefreshCw size={18} className="text-green-600"/></div>
+            <div><p className="text-gray-900 font-semibold text-base leading-tight">帮帮回收</p><p className="text-gray-400 text-xs">管理后台 v1.0</p></div>
           </div>
+          <button onClick={()=>setMobileMenuOpen(false)} className="md:hidden p-2 rounded-lg text-gray-400 hover:bg-gray-100"><X size={18}/></button>
         </div>
-        <nav className="flex-1 px-3 py-4 space-y-1">
-          {NAV.map(({id,label,icon:Icon})=>{
+        <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto">
+          {NAV.map(({id,path,label,icon:Icon})=>{
             const active=page===id;
-            return(<button key={id} onClick={()=>{setPage(id);navigate(`/${id}`);}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-sm font-medium transition-all ${active?"text-white":"text-green-200/60 hover:text-green-100 hover:bg-white/5"}`} style={active?{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}:{}}>
-              <Icon size={16}/>{label}{active&&<ChevronRight size={13} className="ml-auto opacity-70"/>}
+            return(<button key={id} onClick={()=>{navigate(path);setMobileMenuOpen(false);}} className={`w-full flex items-center gap-3 px-3 py-3 rounded-xl text-base font-medium transition-colors min-h-[44px] ${active?"bg-green-50 text-green-700":"text-gray-500 hover:bg-green-50 hover:text-green-700"}`}>
+              <Icon size={18}/>{label}{active&&<ChevronRight size={14} className="ml-auto text-green-500"/>}
             </button>);
           })}
         </nav>
-        <div className="px-4 py-4 border-t" style={{borderColor:"rgba(255,255,255,0.06)"}}>
+        <div className="px-4 py-4 border-t border-gray-100">
           <div className="flex items-center gap-3 mb-3">
-            <div className="w-8 h-8 rounded-full bg-green-700 flex items-center justify-center flex-shrink-0"><span className="text-xs font-bold text-white">管</span></div>
-            <div className="flex-1 min-w-0"><p className="text-sm font-medium text-green-100 truncate">超级管理员</p><p className="text-[11px] text-green-500/60">{adminName||"admin"}</p></div>
+            <div className="w-10 h-10 rounded-full bg-green-50 flex items-center justify-center flex-shrink-0"><span className="text-sm font-bold text-green-700">管</span></div>
+            <div className="flex-1 min-w-0"><p className="text-base font-medium text-gray-700 truncate">{adminName||"管理员"}</p><p className="text-xs text-gray-400">超级管理员</p></div>
           </div>
-          <button onClick={onLogout} className="w-full flex items-center gap-2 px-3 py-2 rounded-lg text-xs text-green-300/50 hover:text-red-300 hover:bg-red-900/20 transition-all"><LogOut size={13}/>退出登录</button>
+          <button onClick={onLogout} className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-gray-400 hover:text-green-700 hover:bg-green-50 transition-colors min-h-[44px]"><LogOut size={14}/>退出登录</button>
         </div>
       </aside>
-      <main className="flex-1 overflow-auto bg-gray-50">
-        <div className="bg-white border-b border-gray-100 px-6 py-3.5 flex items-center justify-between sticky top-0 z-30">
-          <div className="flex items-center gap-2 text-sm text-gray-400"><span>首页</span><ChevronRight size={12}/><span className="text-gray-700 font-medium">{NAV.find(n=>n.id===page)?.label}</span></div>
-          <div className="flex items-center gap-2 text-xs text-gray-400"><div className="w-2 h-2 rounded-full bg-green-400 animate-pulse"/>系统运行正常</div>
+      <main className="h-screen min-w-0 flex-1 overflow-y-auto bg-gray-50">
+        <div className="bg-white border-b border-gray-100 px-4 md:px-6 py-3.5 flex items-center justify-between sticky top-0 z-30">
+          <div className="flex items-center gap-2">
+            <button onClick={()=>setMobileMenuOpen(true)} className="md:hidden p-2 -ml-2 rounded-lg text-gray-500 hover:bg-gray-100 min-h-[44px] min-w-[44px] flex items-center justify-center"><Menu size={20}/></button>
+            <div className="hidden md:flex items-center gap-2 text-sm text-gray-400"><span>首页</span><ChevronRight size={12}/><span className="text-gray-700 font-medium">{NAV.find(n=>n.id===page)?.label}</span></div>
+            <span className="md:hidden text-sm font-medium text-gray-700">{NAV.find(n=>n.id===page)?.label}</span>
+          </div>
+          <div className="flex items-center gap-2 text-xs text-gray-400"><div className="w-2 h-2 rounded-full bg-green-400 animate-pulse"/><span className="hidden sm:inline">系统运行正常</span></div>
         </div>
-        {detailId?<AdminOrderDetailPage id={detailId} token={token} onBack={()=>navigate("/orders")} onError={onError}/>:loading?<div className="min-h-[420px] flex flex-col items-center justify-center text-gray-400 gap-3"><Loader size={24} className="animate-spin text-green-600"/><p className="text-sm">正在加载真实业务数据…</p></div>:<>
+        {detailId?<AdminOrderDetailPage id={detailId} token={token} staff={staff} onSaveOrder={saveOrder} onBack={()=>navigate("/orders")} onError={onError}/>:userDetailId?<UserDetailPage userId={userDetailId} token={token} onBack={()=>navigate("/staff")} onViewOrder={(id)=>navigate(`/orders/${encodeURIComponent(id)}`)} onError={onError}/>:loading?<div className="min-h-[420px] flex flex-col items-center justify-center text-gray-400 gap-3"><Loader size={24} className="animate-spin text-green-600"/><p className="text-sm">正在加载真实业务数据…</p></div>:<>
           {page==="orders"    &&<OrdersPage staff={staff} groups={groups} orders={orders} onSaveOrder={saveOrder} onAssignRecycler={assignOrderRecycler} onUnsupported={unsupported} onViewOrder={(id)=>navigate(`/orders/${encodeURIComponent(id)}`)}/>}
-          {page==="staff"     &&<StaffPage staff={staff} users={users} onSaveStaff={saveStaff}/>}
-          {page==="cats"      &&<RecycleCatsPage groups={groups} onSaveCategory={saveCategory} onSaveGroup={saveCategoryGroup} onUnsupported={unsupported}/>}
+          {page==="staff"     &&<StaffPage staff={staff} users={users} admins={admins} onSaveStaff={saveStaff} onSaveAdmin={saveAdmin} onToggleAdmin={toggleAdmin} onViewUser={(id)=>navigate(`/users/${encodeURIComponent(id)}`)}/>}
+          {page==="cats"      &&<CategoryTreePage nodes={categoryTree} onSave={saveCategoryNode} onDelete={deleteCategory}/>}
           {page==="analytics" &&<AnalyticsPage orders={orders}/>} 
           {page==="system"    &&<SystemPage items={systemSettings} onSave={saveSystemSetting} onDelete={deleteSystemSetting}/>}
         </>}

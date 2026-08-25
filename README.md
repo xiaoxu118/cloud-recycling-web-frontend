@@ -16,18 +16,18 @@
 
 1. 在 `CloudRecycling` 仓库部署 `cloudfunctions/quickstartFunctions`，并确保 `config.json` 包含 `wxacode.getUnlimited` 权限。
 2. 调用一次 `initAdminCollections`，或首次打开后台时由登录接口自动创建管理相关集合。
-3. 用非管理员微信扫码一次，确认页会提示“无权限”并展示当前 `OpenID`。
-4. 在云开发数据库 `admins` 集合中新增管理员：
+3. 在云开发数据库 `admins` 集合中新增第一位超级管理员（**手机号即主键**）：
 
 ```json
 {
-  "openid": "扫码页展示的 OpenID",
+  "phone": "13800001234",
   "name": "运营管理员",
-  "role": "admin",
+  "role": "super_admin",
   "enabled": true
 }
 ```
 
+4. 超级管理员扫码后输入手机号确认，云函数会**自动回填** `openid` 与 `wechatBound` 字段。后续必须用同一微信扫码才能登录同一手机号（防止手机号被他人扫码使用）。
 5. 在 CloudBase 控制台开启 Web 端可用的身份能力。当前页面会尝试匿名登录后调用云函数，若环境未开启匿名登录，需要在控制台启用匿名登录或改成正式 Web OAuth 登录。
 
 ## 与小程序共用数据
@@ -62,3 +62,24 @@ npm run build
 开发服务默认使用 Vite 端口，生产构建输出到 `dist/`。部署时上传 `dist/` 目录内容。若云开发环境 ID 变化，修改 `public/config.js`；该文件会在构建时复制到 `dist/config.js`。
 
 正式使用建议绑定自定义域名，并只把后台域名发给运营人员。真正的权限边界仍在云函数的管理员白名单和 session 校验。
+
+## 环境配置
+
+CloudBase / 微信云开发 环境 ID 通过**三级优先级**解析，集中入口在 [`src/config/admin.ts`](src/config/admin.ts)。优先级从高到低：
+
+1. **URL 查询参数**（仅调试）：`http://localhost:5173/?env=xxx` 或 `?fn=xxx`
+2. **运行时注入**：[`public/config.js`](public/config.js) 里的 `window.ADMIN_CONFIG`。Vite 构建时原样拷贝到 `dist/config.js`，**适合部署时临时切环境**
+3. **构建时变量**：`.env.development` / `.env.production` 里的 `VITE_CLOUDBASE_ENV` / `VITE_FUNCTION_NAME`
+4. **代码内默认**：避免 `git clone` 后 `npm run dev` 跑不起来
+
+**默认值是 `bangbang-d2gy4wqj264b5483c`（与 `miniprogram/app.js` 一致）**。如果换成新环境，**仅改一处即可**：
+
+- 日常：改 `.env.production` 里的 `VITE_CLOUDBASE_ENV`，然后 `npm run build`
+- 临时切环境：改 `public/config.js` 里的 `env`，再 `npm run build`
+- 调试：浏览器加 `?env=xxx`，刷新即可，无需重 build
+
+**务必让 `VITE_CLOUDBASE_ENV` 与 `miniprogram/app.js` 里的 `globalData.env` 保持一致**，否则 Web 端写入的 `admin_login_tickets` 与小程序扫码时查询的不是一个环境，扫码登录必然失败。
+
+复制 [`.env.example`](.env.example) 为 `.env.production` 即可使用。
+
+`import.meta.env.DEV` 模式下，控制台会打印 `[admin] config resolved: { env, functionName }`，方便验证是否生效。

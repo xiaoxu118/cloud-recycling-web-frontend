@@ -1,4 +1,4 @@
-import type { Category, CategoryGroup, Order, RecycleSettings, StaffRecord, SystemSetting, UserRecord } from "../types";
+import type { AdminRecord, Category, Order, RecycleSettings, StaffRecord, SystemSetting, UserRecord } from "../types";
 
 let orders: Order[] = [
   {
@@ -51,12 +51,12 @@ let orders: Order[] = [
 ];
 
 let categories: Category[] = [
-  { _id: "c1", name: "纸箱", unit: "kg", priceRef: "0.8元/kg起", sortOrder: 1, enabled: true },
-  { _id: "c2", name: "塑料瓶", unit: "kg", priceRef: "1.2元/kg起", sortOrder: 2, enabled: true },
-  { _id: "c3", name: "旧家电", unit: "件", priceRef: "现场估价", sortOrder: 3, enabled: false },
-];
-let categoryGroups: CategoryGroup[] = [
-  { _id: "default", name: "回收品类", description: "小程序当前展示的全部可回收品类", sortOrder: 0, enabled: true },
+  { _id: "paper", parentId: null, name: "纸类", unit: "kg", priceRef: "", sortOrder: 1, enabled: true },
+  { _id: "c1", parentId: "paper", name: "纸箱", unit: "kg", priceRef: "0.8元/kg起", sortOrder: 1, enabled: true },
+  { _id: "plastic", parentId: null, name: "塑料", unit: "kg", priceRef: "", sortOrder: 2, enabled: true },
+  { _id: "c2", parentId: "plastic", name: "塑料瓶", unit: "kg", priceRef: "1.2元/kg起", sortOrder: 1, enabled: true },
+  { _id: "appliance", parentId: null, name: "家电", unit: "件", priceRef: "", sortOrder: 3, enabled: true },
+  { _id: "c3", parentId: "appliance", name: "旧家电", unit: "件", priceRef: "现场估价", sortOrder: 1, enabled: false },
 ];
 
 let settings: RecycleSettings = {
@@ -69,11 +69,28 @@ let settings: RecycleSettings = {
 
 let systemSettings: SystemSetting[] = [
   { key: "service_phone", label: "客服电话", type: "text", value: "400-800-1234", description: "小程序首页展示及拨打的客服电话" },
+  { key: "user_agreement", label: "用户协议", type: "longtext", value: "", description: "小程序登录页展示，用户点击《用户协议》弹窗内容" },
+  { key: "privacy_policy", label: "隐私政策", type: "longtext", value: "", description: "小程序登录页展示，用户点击《隐私政策》弹窗内容" },
+  { key: "terms_of_service", label: "服务条款", type: "longtext", value: "", description: "小程序下单页展示，用户点击《帮帮回收上门服务条款》弹窗内容" },
 ];
 
 // Mock 仅用于显式的 ?mock=1 本地预览；生产环境始终调用云函数。
 let staff: StaffRecord[] = [];
 const users: UserRecord[] = [];
+let admins: AdminRecord[] = [
+  {
+    _id: "mock-admin-1",
+    phone: "15756078813",
+    name: "管理员",
+    role: "admin",
+    enabled: true,
+    cloudbaseUid: "mock-uid-1",
+    wechatBound: true,
+    loginMethod: "phone",
+    createTime: Date.now() - 30 * 24 * 60 * 60 * 1000,
+    updateTime: Date.now(),
+  },
+];
 
 export const isDevPreview = () =>
   import.meta.env.DEV && new URLSearchParams(window.location.search).get("mock") === "1";
@@ -98,7 +115,6 @@ export async function mockCall<T>(type: string, data: Record<string, unknown>): 
       ...item,
       status: item.status === "submitted" ? "processing" : item.status,
       recyclerId: assignedStaff._id,
-      recyclerOpenid: assignedStaff.openid,
       recyclerName: assignedStaff.name,
       recyclerPhone: assignedStaff.phone,
       assignedAt: Date.now(),
@@ -106,16 +122,24 @@ export async function mockCall<T>(type: string, data: Record<string, unknown>): 
     } : item);
     return orders.find((item) => item._id === data.orderId) as T;
   }
-  if (type === "adminListCategories") return categories as T;
-  if (type === "adminListCategoryGroups") return categoryGroups as T;
-  if (type === "adminSaveCategoryGroup") {
-    const group = data.group as CategoryGroup;
-    if (group._id) categoryGroups = categoryGroups.map((item) => item._id === group._id ? group : item);
-    else categoryGroups = [...categoryGroups, { ...group, _id: `g${Date.now()}` }];
-    return group as T;
+  if (type === "adminListCategories") return categories.filter((item)=>!item.deleted) as T;
+  if (type === "adminDeleteCategory") {
+    const pending=[String(data.id||"")];
+    const deletedIds=new Set<string>();
+    while(pending.length){
+      const id=pending.shift()!;
+      if(deletedIds.has(id))continue;
+      deletedIds.add(id);
+      categories.filter((item)=>item.parentId===id).forEach((item)=>item._id&&pending.push(item._id));
+    }
+    categories = categories.map((item)=>item._id&&deletedIds.has(item._id)?{...item,deleted:true,deletedAt:Date.now(),enabled:false}:item);
+    return { id: data.id } as T;
   }
   if (type === "adminSaveCategory") {
     const category = data.category as Category;
+    if (categories.some((item) => !item.deleted && item._id !== category._id && item.name.trim().toLowerCase() === category.name.trim().toLowerCase())) {
+      throw new Error("CATEGORY_NAME_DUPLICATE");
+    }
     if (category._id) categories = categories.map((item) => item._id === category._id ? category : item);
     else categories = [...categories, { ...category, _id: `c${Date.now()}` }];
     return undefined as T;
@@ -136,7 +160,56 @@ export async function mockCall<T>(type: string, data: Record<string, unknown>): 
     return undefined as T;
   }
   if (type === "adminListUsers") return users as T;
+  if (type === "adminListAdmins") return admins as T;
+  if (type === "adminSaveAdmin") {
+    const phone = String(data.phone || "").replace(/\D/g, "");
+    const id = String(data.id || "").trim();
+    const name = String(data.name || "").trim();
+    const enabled = data.enabled !== false;
+    if (!/^1[3-9]\d{9}$/.test(phone)) throw new Error("PARAM_INVALID");
+    if (id) {
+      admins = admins.map((current) => current._id === id ? {
+        ...current,
+        name,
+        enabled,
+        updateTime: Date.now(),
+      } : current);
+      return admins.find((current) => current._id === id) as T;
+    }
+    if (admins.some((current) => current.phone === phone)) throw new Error("PHONE_ALREADY_EXISTS");
+    const created: AdminRecord = {
+      _id: `mock-admin-${Date.now()}`,
+      phone,
+      name,
+      role: "admin",
+      enabled,
+      createTime: Date.now(),
+      updateTime: Date.now(),
+    };
+    admins = [created, ...admins];
+    return created as T;
+  }
+  if (type === "adminToggleAdmin") {
+    const id = String(data.id || "").trim();
+    const enabled = data.enabled !== false;
+    const target = admins.find((current) => current._id === id);
+    if (!enabled && target && target.enabled !== false) {
+      const enabledCount = admins.filter((current) => current.enabled !== false).length;
+      if (enabledCount <= 1) throw new Error("LAST_ADMIN_PROTECTED");
+    }
+    admins = admins.map((current) => current._id === id ? { ...current, enabled, updateTime: Date.now() } : current);
+    return admins.find((current) => current._id === id) as T;
+  }
   if (type === "adminListStaff") return staff as T;
+  if (type === "adminPhoneLogin") {
+    // 本地预览下直接放行，模拟 CloudBase SMS 已完成验证。
+    return {
+      sessionToken: `local-phone-${Date.now()}`,
+      adminName: "本地管理员",
+      role: "admin",
+      expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
+    } as T;
+  }
   if (type === "adminSaveStaff") {
     const item = data.staff as StaffRecord;
     if (item._id) staff = staff.map((current) => current._id === item._id ? item : current);
