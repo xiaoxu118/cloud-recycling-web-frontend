@@ -16,24 +16,27 @@ This file provides guidance to AI coding agents working in this repository.
 | 样式 | Tailwind 4 + 自写 `login.css` / `styles.css` / `figma/styles/*` | 登录页样式与后台隔离 |
 | UI 规范 | `lucide-react` 图标 + Figma 设计稿 `https://www.figma.com/design/HuhRXYYWhknyphP6n3nL6E` | 生产界面 `src/figma/FigmaAdmin.tsx` |
 | 云调用 | `@cloudbase/js-sdk` 3.6 | 不传 `accessKey`，无匿名登录（详见「鉴权」） |
-| 数据导入 | `exceljs` 4.4 | 品类批量导入弹窗 |
-| 图表 | `recharts` 2.15 | 已就位但目前分析页未启用 |
+| 数据导入 | `exceljs` 4.4 | 品类批量导入弹窗（`ImportModal`，当前入口不可达，见「死代码」） |
+| 图表 | `recharts` 2.15 | **已启用**，`AnalyticsPage` 在用（导航 `analytics`） |
 | Node | typescript 5.9 | 严格模式 |
+
+其它未在上表体现的依赖：`tw-animate-css` 1.3.8、`overrides: { uuid: 11.1.1 }`。
 
 ## 开发与构建
 
 ```bash
-npm install                 # 锁定版本安装
-npm run dev                 # Vite dev server，http://localhost:5173
+npm install                 # 注意是 install 而非 ci，lockfile 不强制
+npm run dev                 # vite --host 0.0.0.0，http://localhost:5173
 npm run build               # tsc --noEmit && vite build，提交前**必须**通过
-npm run preview             # 预览 dist/
+npm run preview             # vite preview --host 0.0.0.0
 ```
 
 ### 关键运行模式
 
 - **本地预览（无云开发）**：`http://localhost:5173/?mock=1#/orders`
-  - `isDevPreview()` 检测到 `?mock=1` 后短路 `callCloud` → `mockCall`
+  - `isDevPreview()` 要求 **`import.meta.env.DEV` 与 `?mock=1` 同时成立**（mock.ts:95-96），生产构建下 `?mock=1` 无效
   - 数据来自 `src/api/mock.ts`，含 `adminPhoneLogin` 本地直发 session
+  - mock 未实现的 type 会抛 `本地预览未实现接口：${type}`；已知 `adminUserDetail` 未实现，故 Mock 模式下用户详情页必然报错
 - **真实环境**：删除 `?mock=1` 即可
 - **临时切环境/函数**：`?env=xxx&fn=yyy`（优先级最高），无需改配置
 
@@ -54,20 +57,24 @@ cloud-recycling-web-frontend/
 ├── public/
 │   └── config.js               # 部署时注入 window.ADMIN_CONFIG，留空走 .env
 ├── src/
-│   ├── main.tsx                # React 挂载，HashRouter
-│   ├── App.tsx                 # /login 页面 + 路由分发 /* → FigmaAdminApp
-│   ├── styles.css / login.css  # 全局样式（登录与后台相互独立）
+│   ├── main.tsx                # React 挂载，HashRouter；只 import login.css + figma/styles/index.css
+│   ├── App.tsx                 # /login 页面 + 路由分发 /* → FigmaAdminApp（588 行，含大段死代码）
+│   ├── login.css               # 登录页样式（唯一被 import 的顶层 css）
+│   ├── styles.css              # ⚠️ 491 行死文件，无任何 import
 │   ├── config/admin.ts         # 4 级级联的配置解析：URL > window > import.meta.env > 默认
 │   ├── api/
-│   │   ├── cloud.ts            # callCloud 封装 / initCloud / uploadTransferProof / CloudError
+│   │   ├── cloud.ts            # callCloud / initCloud / getCloudBaseApp / uploadTransferProof /
+│   │   │                       # uploadSystemImage / cloudUrlToHttps / cloudUrlsToHttps / CloudError
 │   │   └── mock.ts             # 本地预览数据，导出 isDevPreview() 与 mockCall()
 │   ├── types.ts                # 跨页面共享的领域类型（Order / Category / RecycleSettings ...）
 │   ├── figma/
-│   │   ├── FigmaAdmin.tsx      # 生产界面大文件，2650+ 行
-│   │   └── styles/             # 全局 CSS（tailwind.css / theme.css / fonts.css ...）
+│   │   ├── FigmaAdmin.tsx      # 生产界面大文件，2977 行
+│   │   └── styles/             # index.css 只 @import fonts/tailwind/theme；globals.css 为空且未引用
 │   └── vite-env.d.ts
-├── docs/design/                # 设计/实现记录
+├── .env.example
 ├── DESIGN.md                   # 设计原则、Figma 链接、视觉基准
+├── README.md
+├── index.html
 ├── tsconfig.json               # 严格 TypeScript
 ├── vite.config.ts
 └── package.json
@@ -80,9 +87,33 @@ cloud-recycling-web-frontend/
 2. 路由 `/login` → `LoginPage`，其余 `/*` 全部交给 `FigmaAdminApp`
 3. 全局 toast / fatal error 兜底
 
-**所有业务页面（订单 / 品类 / 系统配置 / 详情）都在 `FigmaAdminApp` 内部**用状态机 + `useNavigate()` 实现，不再走 react-router 的 `<Route>`。FigmaAdmin 自己也定义 `/orders`、`/orders/:id`、`/categories`、`/settings`、`/staff` 等路径做权限切换和 history 兼容（`/cats`、`/system` 已重定向到现名）。
+**所有业务页面（订单 / 品类 / 系统配置 / 详情）都在 `FigmaAdminApp` 内部**用状态机 + `useNavigate()` 实现，不再走 react-router 的 `<Route>`。App.tsx 的 `<Routes>` 真实只挂两条：`/login → LoginPage`、`/* → FigmaAdminApp`。FigmaAdmin 自己解析 `/orders`、`/orders/:id`、`/categories`、`/settings`、`/staff`、`/users/:id`、`/analytics` 等路径做权限切换和 history 兼容（`/cats`、`/system` 已重定向到现名）。
 
-> ⚠️ **App.tsx 中的孤儿组件**（`OrdersPage` / `CategoriesPage` / `SettingsPage` / `OrderDrawer`，行 315–549）已不再被 `<Routes>` 引用，**是历史遗留的死代码**。`FigmaAdminApp` 替代后未清理。修改其 UI 前请在编辑器内 grep `<OrdersPage|<CategoriesPage|<SettingsPage|<OrderDrawer` 确认仍无引用后再删；目前可保留下次重构。
+### 死代码清单（改前必看）
+
+两个文件都残留了被 `FigmaAdminApp` 取代后未清理的组件，**全部无 JSX 引用**。改 UI 前先确认自己改的不是死的那一份：
+
+`App.tsx`（孤儿块 303–577）：
+
+| 组件 | 行 | 说明 |
+|---|---|---|
+| `AdminLayout` | 303 | 与 FigmaAdmin 的 `MainLayout` 重名概念，已废 |
+| `OrdersPage` | 343 | |
+| `OrderDrawer` | 444 | 仅被死的 `OrdersPage` 引用 |
+| `OrderDetail` | 549 | 仅被死的 `OrderDrawer` 引用 |
+| `CategoriesPage` | 554 | |
+| `CategoryModal` | 563 | 仅被死的 `CategoriesPage` 引用 |
+| `SettingsPage` | 570 | 唯一调用 `adminSaveSettings` 的地方 |
+
+`FigmaAdmin.tsx`：
+
+| 组件 | 行 | 说明 |
+|---|---|---|
+| `OrderDetailPanel` | 699 | 被 `AdminOrderDetailPage` 取代 |
+| `CategoryGroupModal` / `CategoryEditorModal` | 1349 / 1374 | 仅被死的 `RecycleCatsPage` 引用 |
+| `ImportModal` | 1481 | exceljs 批量导入，**从 UI 无法到达** |
+| `RecycleCatsPage` | 1632 | 被 `CategoryTreePage` 取代 |
+| `LoginPage` | 2200 | 内含硬编码 `admin/admin123` 校验 |
 
 ## 配置与运行时环境
 
@@ -116,24 +147,25 @@ functionName = "quickstartFunctions"
    - 调云函数 `adminPhoneLogin { phone, cloudbaseUid: uid }` 换 admin `sessionToken`
    - 写 `localStorage.admin_session_token` / `admin_name`
 
-2. **小程序扫码**（备用入口，未挂 web 路由）
-   - web 调 `adminCreateLoginTicket` 生成 5 分钟 ticket
-   - 小程序扫码调 `adminConfirmLoginTicket` 用 openid 确认
-   - web 轮询 `adminCheckLoginTicket` 拿到 `sessionToken`
+2. **小程序扫码**（后端能力就绪，**web 端未接线**）
+   - 后端 `adminCreateLoginTicket` / `adminConfirmLoginTicket` / `adminCheckLoginTicket` 均已实现（`recycle/admin.js`）
+   - 但 web 代码里**没有任何调用点**，要启用需自行补前端流程
 
 ### Session TTL
 
-- 云函数 `admin_sessions.expiresAt` 当前为 **7 天**（`recycle/admin.js:9`）
+- 云函数 `ADMIN_SESSION_TTL` 为 **7 天**（`recycle/admin.js:10`）
+- `recycle/admin.js:14` 还有 `DEV_BYPASS_ADMIN_AUTH = false` 开关，排查鉴权问题时留意
 - 存量 session 在改 TTL 后**不会复活**，到期后强制重登
 - web 端**不**自行校验 expiresAt，过期由云函数 `ADMIN_SESSION_EXPIRED` 触发 `logout()`
+- 启动时用 `adminGetSettings` 探活本地 token（App.tsx:112-125），失败即清理登录态
 
 ### LocalStorage 键
 
 | Key | 用途 |
 |---|---|
-| `admin_session_token` | Web 管理的 sessionToken |
+| `admin_session_token` | Web 管理的 sessionToken（App.tsx:89/120/135/167） |
 | `admin_name` | 显示名 |
-| `figma_admin_cols_widths` | FigmaAdmin 表格列宽记忆（FigmaAdmin.tsx:1775） |
+| `system-config-column-widths-v1` | 系统配置表格列宽记忆（`SYS_CFG_COL_KEY`，FigmaAdmin.tsx:1950） |
 
 ## 接口契约（callCloud）
 
@@ -158,56 +190,71 @@ const result = await callCloud<OrderListResult>("adminListOrders", {
 
 ### 已使用的 action 清单（web 端）
 
-- `adminPhoneLogin` / `adminCreateLoginTicket` / `adminConfirmLoginTicket` / `adminCheckLoginTicket`
-- `adminListOrders` / `adminGetOrderDetail` / `adminUpdateOrder` / `adminAssignOrderRecycler`
-- `adminListCategories` / `adminSaveCategory` / `adminDeleteCategory`
-- `adminGetSettings` / `adminSaveSettings`
-- `adminListSystemSettings` / `adminSaveSystemSetting` / `adminDeleteSystemSetting`
-- `adminListUsers` / `adminListAdmins` / `adminSaveAdmin` / `adminToggleAdmin`
-- `adminListStaff` / `adminSaveStaff`
-- 上传：`uploadTransferProof` / `uploadSystemImage`（`src/api/cloud.ts` 内部的 `app.uploadFile` 包装）
+- 登录：`adminPhoneLogin`
+- 订单：`adminListOrders` / `adminGetOrderDetail` / `adminUpdateOrder` / `adminAssignOrderRecycler`
+- 品类：`adminListCategories` / `adminSaveCategory` / `adminDeleteCategory`
+- 设置：`adminGetSettings` / `adminListSystemSettings` / `adminSaveSystemSetting` / `adminDeleteSystemSetting`
+- 人员：`adminListUsers` / `adminUserDetail` / `adminListAdmins` / `adminSaveAdmin` / `adminToggleAdmin` / `adminListStaff` / `adminSaveStaff`
+- 上传：`uploadSystemImage`（`src/api/cloud.ts` 内部的 `app.uploadFile` 包装）
+
+**仅存活于死代码的 action**（改动前注意，动它们不影响线上）：
+
+- `adminSaveSettings` —— 只在 App.tsx:575 的孤儿 `SettingsPage`；FigmaAdmin 侧只读 `adminGetSettings` 做 legacy 兜底
+- `uploadTransferProof` —— cloud.ts:49 定义，唯一调用点在孤儿 `OrderDrawer`（App.tsx:494）
+
+**后端有但 web 未调用**：`adminCreateLoginTicket` / `adminConfirmLoginTicket` / `adminCheckLoginTicket`（扫码登录，见「鉴权」）。
 
 ## 错误处理
 
-`App.tsx:31-52` 的 `ERROR_TEXT` 集中映射云函数 errMsg 到人类可读消息：
+`App.tsx:31-52` 的 `ERROR_TEXT` 集中映射云函数 errMsg 到人类可读消息，当前 **20 个键**：
 
-- `ADMIN_SESSION_REQUIRED` / `ADMIN_SESSION_EXPIRED` / `NO_PERMISSION` → 触发 `logout()` 并 toast
-- `PHONE_NOT_IN_WHITELIST` / `PHONE_BOUND_TO_OTHER_ACCOUNT` → 登录页专用
-- `ORDER_STATUS_INVALID` / `ORDER_NOT_FOUND` → 详情页业务校验
-- `EMPTY_RESPONSE` / `CLOUDBASE_SDK_MISSING` / `CLOUDBASE_CONFIG_MISSING` → 启动期致命错
+- 鉴权类 → 触发 `logout()` 并 toast：`ADMIN_SESSION_REQUIRED` / `ADMIN_SESSION_EXPIRED` / `NO_PERMISSION`
+- 登录页专用：`PHONE_NOT_IN_WHITELIST` / `PHONE_BOUND_TO_OTHER_ACCOUNT` / `LOGIN_TICKET_EXPIRED`
+- 订单业务：`ORDER_STATUS_INVALID` / `ORDER_NOT_FOUND` / `TRANSFER_PROOF_REQUIRED` / `FINAL_PRICE_REQUIRED` / `ACTUAL_QUANTITY_REQUIRED` / `CANCEL_REASON_REQUIRED`
+- 品类分组：`CATEGORY_GROUP_REQUIRED` / `CATEGORY_GROUP_NOT_FOUND` / `CATEGORY_GROUP_NOT_EMPTY`
+- 通用/致命：`PARAM_INVALID` / `DB_ERROR` / `EMPTY_RESPONSE` / `CLOUDBASE_SDK_MISSING` / `CLOUDBASE_CONFIG_MISSING`
+
+**已知映射缺口**（代码会抛但字典没有，会把裸 code 直接显示给用户）：
+
+- `CLOUDBASE_NOT_READY`（cloud.ts:38/50/62）、`CALL_FAILED`（cloud.ts:45 兜底 code）
+- mock 专属：`CATEGORY_NAME_DUPLICATE` / `PHONE_ALREADY_EXISTS` / `LAST_ADMIN_PROTECTED` / `STAFF_NOT_ONLINE`
 
 修改云函数错误码后，**一定同步更新** `ERROR_TEXT`，否则前端只显示原始 `result.errMsg`。
 
 ## FigmaAdmin.tsx 内部
 
-2650+ 行，是真正的生产页面实现。导航 / 数据 / 详情页全在这里：
+2977 行，是真正的生产页面实现。导航 / 数据 / 详情页全在这里（行号会随改动漂移，以组件名为准）：
 
-| 模块 | 行号（大致） | 用途 |
+| 模块 | 行 | 用途 |
 |---|---|---|
-| `AdminLayout` | ~2300 | 侧栏 / 顶栏 / 标题 |
-| `OrdersPage` | ~2400 | 订单列表、筛选、分页、汇总卡 |
-| `AdminOrderDetailPage` | ~2500 | 详情 + 编辑合一，URL `/orders/:id` |
-| `CategoryAdminPage` | ~1700 | 品类树渲染 / 模态编辑 |
-| `priceFromReference` | ~177 | 价格字符串 → 数字提取 |
-| `stripTrailingQi` | ~182 | 去 DB 中末尾 `起`（与 miniprogram 对齐） |
-| `categoryToItem` | ~190 | CloudCategory → RecycleItem 投影（**唯一的归一化点**） |
-| `SettingsPage` | ~110 | 系统设置（KV 字典 + image 系统配置） |
-| `StaffPage` / `UsersPage` | 中段 | 人员管理 + 用户列表（已部分接入） |
-| `AssignRecyclerModal` / `ImagePreviewModal` / `NewOrderModal` 等 | 散落 | 弹窗与预览 |
+| `legacySettingsToSystemSettings` | 108 | 旧 settings → KV 字典的兜底转换 |
+| `priceFromReference` | 180 | 价格字符串 → 数字提取 |
+| `stripTrailingQi` | 187 | 去 DB 中末尾 `起`（与 miniprogram 对齐） |
+| `categoryToItem` | 189 | CloudCategory → RecycleItem 投影（**唯一的归一化点**） |
+| `AssignRecyclerModal` / `ImagePreviewModal` / `NewOrderModal` | 536 / 552 / 570 | 弹窗与预览 |
+| `OrdersPage` | 821 | 订单列表、筛选、分页、汇总卡 |
+| `StaffPage` | 1118 | 人员管理，内部 `tab==="users"` 切工作人员/用户列表 |
+| `CategoryTreePage` | 1937 | **在用**的品类树渲染 / 模态编辑（`page==="cats"`） |
+| `SystemPage` | 1954 | 系统设置（KV 字典 + image 系统配置），编辑弹窗 `SystemSettingEditor` 在 2101 |
+| `AnalyticsPage` | 2250 | recharts 图表，导航 `analytics` |
+| `AdminOrderDetailPage` | 2567 | 订单详情 + 编辑合一，URL `/orders/:id` |
+| `UserDetailPage` | 2603 | 用户详情，URL `/users/:id` |
+| `MainLayout` | 2685 | 侧栏 / 顶栏 / 标题（**不叫 AdminLayout**） |
+| `FigmaAdminApp` | 2975 | 导出的根组件 |
 
 ### 关键约定
 
-- **品类价格归一化**：所有进入 UI 的 `priceRef` 都通过 `stripTrailingQi`（`FigmaAdmin.tsx:182`）剥尾 `起`，与小程序 `miniprogram/pages/category/index.js:49-50` 行为对齐。
-- **`minVisitKg`（最低上门重量）**：品类级可选字段，留空/未设置时显示 `— 全局`（FigmaAdmin.tsx:1751）。
-- **类别 enable 切换**走 `adminSaveCategory` 全量保存；未在提供 toggle 专用 action。
-- **表格列宽记忆**：拖拽列后只更新 DOM，`mouseup` 才写 `localStorage`（行 1769 起）。
+- **品类价格归一化**：所有进入 UI 的 `priceRef` 都通过 `stripTrailingQi`（FigmaAdmin.tsx:187）剥尾 `起`，与小程序 `miniprogram/pages/category/index.js:49-50` 行为对齐。
+- **`minVisitKg`（最低上门重量）**：品类级可选字段，留空/未设置时显示 `— 全局`（FigmaAdmin.tsx:1945，在 `CategoryTreePage` 的 `renderRows`）。
+- **类别 enable 切换**走 `adminSaveCategory` 全量保存；未提供 toggle 专用 action。
+- **表格列宽记忆**：逻辑在 1958-2001（`onColMouseMove` 1976 / `onColMouseUp` 1987），拖拽时只改 DOM，写盘由 1972-1975 的 `useEffect` 触发。
 
 ## 注意事项
 
-- **修改 App.tsx 业务组件前先确认是否被引用**：上文「孤儿组件」列表项很可能仍被你 grep 误判成"活的"。
-- **新增导航路径**：需要同时更新 FigmaAdmin.tsx 内的 `pages[]` 数组、`parsePageFromPath`、`useEffect` redirect 兜底。
-- **`@cloudbase/js-sdk` 不传 `accessKey`**：`src/api/cloud.ts:30-33` 注释解释——避免 SDK 自动开匿名会话污染 `signInWithOtp()` 拿到的真实 uid。
+- **修改业务组件前先确认是否被引用**：`App.tsx` 与 `FigmaAdmin.tsx` 都有成片死代码，见上文「死代码清单」。
+- **新增导航路径**：需要同时更新 FigmaAdmin.tsx 内的 **`NAV`** 数组（2668-2674）、**`pageFromPath`**（2676-2683）以及 `useEffect` redirect 兜底（2707-2708 处理 `/cats`、`/system` 旧路径）。
+- **`@cloudbase/js-sdk` 不传 `accessKey`**：`src/api/cloud.ts:30-32` 注释解释——避免 SDK 自动开匿名会话污染 `signInWithOtp()` 拿到的真实 uid。
 - **build 前必跑 `npm run build`**：本项目目前唯一自动化校验入口。
 - **本仓库 dist/ 不入库**，所有部署走 MCP `manageHosting action=upload`。
 - **与 cloud-recycling 同步**：admin.js 改了接口/字段名/错误码，web 这边的 types.ts、ERROR_TEXT、AdminOrderDetailPage 等都需同步核对（参见另一仓库 AGENTS.md「相关项目」段）。
-- **本仓库没有自动化测试**：UI 改动后请在 Mock 模式下手动走一遍加载 / 空 / 成功 / 错误四种状态。
+- **本仓库没有自动化测试**：UI 改动后请在 Mock 模式下手动走一遍加载 / 空 / 成功 / 错误四种状态（注意 `adminUserDetail` 在 mock 下未实现）。

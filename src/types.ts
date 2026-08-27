@@ -129,3 +129,26 @@ export interface AdminRecord {
   createTime?: number;
   updateTime?: number;
 }
+
+/** feedbacks 集合记录。小程序端「投诉和建议」提交，后台只读 + 标记已处理。 */
+export interface FeedbackRecord {
+  _id: string;
+  tags?: string[];
+  content?: string;
+  contact?: string;
+  userSnapshot?: {
+    nickName?: string;
+    phone?: string;
+  };
+  status: "pending" | "handled";
+  handledAt?: number | null;
+  handledBy?: string;
+  createTime?: number;
+  updateTime?: number;
+}
+
+export interface FeedbackListResult {
+  list: FeedbackRecord[];
+  total: number;
+  hasMore: boolean;
+}

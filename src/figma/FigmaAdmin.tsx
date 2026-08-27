@@ -7,7 +7,7 @@ import {
   AlarmClock, Lock, SlidersHorizontal, Store, ChevronUp, Columns3,
   Upload, FileSpreadsheet, Download, AlertCircle, Navigation,
   BarChart2, TrendingUp, CheckCircle2, Coins, ArrowUpRight, Shield, RotateCcw,
-  Menu, Filter, type LucideIcon,
+  Menu, Filter, MessageSquare, type LucideIcon,
 } from "lucide-react";
 import {
   ResponsiveContainer, ComposedChart, LineChart, Line, BarChart, Bar,
@@ -18,6 +18,8 @@ import { callCloud, uploadSystemImage, cloudUrlToHttps, cloudUrlsToHttps } from 
 import type {
   AdminRecord,
   Category as CloudCategory,
+  FeedbackListResult,
+  FeedbackRecord,
   Order as CloudOrder,
   OrderListResult,
   OrderStatus as CloudOrderStatus,
@@ -28,8 +30,8 @@ import type {
 } from "../types";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-type Page = "orders" | "staff" | "cats" | "analytics" | "system";
-type OrderStatus = "待接单" | "已接单" | "回收中" | "已完成" | "已取消";
+type Page = "orders" | "staff" | "cats" | "analytics" | "feedback" | "system";
+type OrderStatus = "待上门" | "进行中" | "已完成" | "已取消";
 type StaffStatus = "online" | "resting" | "resigned";
 type BusinessOrderType = "recycle" | "furniture_demolition" | "shop_demolition";
 
@@ -79,16 +81,15 @@ export interface FigmaAdminProps {
 }
 
 const CLOUD_TO_FIGMA_STATUS: Record<CloudOrderStatus, OrderStatus> = {
-  submitted: "待接单",
-  processing: "回收中",
+  submitted: "待上门",
+  processing: "进行中",
   completed: "已完成",
   canceled: "已取消",
 };
 
 const FIGMA_TO_CLOUD_STATUS: Record<OrderStatus, CloudOrderStatus> = {
-  待接单: "submitted",
-  已接单: "processing",
-  回收中: "processing",
+  待上门: "submitted",
+  进行中: "processing",
   已完成: "completed",
   已取消: "canceled",
 };
@@ -152,7 +153,7 @@ const cloudOrderToFigma = (order: CloudOrder): Order => {
   return {
     id: order.orderNo,
     docId: order._id,
-    status: CLOUD_TO_FIGMA_STATUS[order.status] || "待接单",
+    status: CLOUD_TO_FIGMA_STATUS[order.status] || "待上门",
     orderType: resolveBusinessOrderType(order),
     userName: address.contactName || "未填写",
     phone: address.phone || "",
@@ -361,13 +362,13 @@ const INIT_GROUPS: RecycleGroup[] = [
 ];
 
 const INIT_ORDERS: Order[] = [
-  { id:"202401150001", status:"待接单",  userName:"张明辉", phone:"13800123456", address:"北京市朝阳区望京街道望京SOHO T1楼 2301室",    description:"家里翻新，有废旧铁管和铝合金型材，另有铜线若干，约15公斤。", appointmentTime:"2024-01-15 09:00–11:00", images:["https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=400&h=280&fit=crop","https://images.unsplash.com/photo-1532996122724-e3c354a0b15b?w=400&h=280&fit=crop"], recyclers:["王建国"], category:"常见金属", weight:"约15斤", createdAt:"2024-01-14 16:32", lastModified:"2024-01-14 16:32" },
-  { id:"202401150002", status:"已接单",  userName:"李秀英", phone:"15898765432", address:"上海市浦东新区陆家嘴金融贸易区世纪大道1501号", description:"清理仓库，大量纸箱和书本，约30公斤，方便取走报纸。",           appointmentTime:"2024-01-15 14:00–16:00", images:["https://images.unsplash.com/photo-1604187351574-c75ca79f5807?w=400&h=280&fit=crop"], recyclers:["赵志远","刘铁柱"], category:"纸制品",   weight:"约30斤", createdAt:"2024-01-15 08:10", lastModified:"2024-01-15 09:00" },
-  { id:"202401150003", status:"回收中",  userName:"陈建平", phone:"18600234567", address:"广州市天河区珠江新城花城大道88号",             description:"旧电脑主机2台、显示器1台、键鼠若干，还有一部旧手机。",        appointmentTime:"2024-01-15 10:00–12:00", images:["https://images.unsplash.com/photo-1591193686104-fddba9b544a1?w=400&h=280&fit=crop","https://images.unsplash.com/photo-1542601906990-b4d3fb778b09?w=400&h=280&fit=crop","https://images.unsplash.com/photo-1611273426858-450d8e3c9fce?w=400&h=280&fit=crop"], recyclers:["刘铁柱"], category:"电子废品", weight:"约8斤",  createdAt:"2024-01-15 09:05", lastModified:"2024-01-15 10:30" },
+  { id:"202401150001", status:"待上门",  userName:"张明辉", phone:"13800123456", address:"北京市朝阳区望京街道望京SOHO T1楼 2301室",    description:"家里翻新，有废旧铁管和铝合金型材，另有铜线若干，约15公斤。", appointmentTime:"2024-01-15 09:00–11:00", images:["https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=400&h=280&fit=crop","https://images.unsplash.com/photo-1532996122724-e3c354a0b15b?w=400&h=280&fit=crop"], recyclers:["王建国"], category:"常见金属", weight:"约15斤", createdAt:"2024-01-14 16:32", lastModified:"2024-01-14 16:32" },
+  { id:"202401150002", status:"进行中",  userName:"李秀英", phone:"15898765432", address:"上海市浦东新区陆家嘴金融贸易区世纪大道1501号", description:"清理仓库，大量纸箱和书本，约30公斤，方便取走报纸。",           appointmentTime:"2024-01-15 14:00–16:00", images:["https://images.unsplash.com/photo-1604187351574-c75ca79f5807?w=400&h=280&fit=crop"], recyclers:["赵志远","刘铁柱"], category:"纸制品",   weight:"约30斤", createdAt:"2024-01-15 08:10", lastModified:"2024-01-15 09:00" },
+  { id:"202401150003", status:"进行中",  userName:"陈建平", phone:"18600234567", address:"广州市天河区珠江新城花城大道88号",             description:"旧电脑主机2台、显示器1台、键鼠若干，还有一部旧手机。",        appointmentTime:"2024-01-15 10:00–12:00", images:["https://images.unsplash.com/photo-1591193686104-fddba9b544a1?w=400&h=280&fit=crop","https://images.unsplash.com/photo-1542601906990-b4d3fb778b09?w=400&h=280&fit=crop","https://images.unsplash.com/photo-1611273426858-450d8e3c9fce?w=400&h=280&fit=crop"], recyclers:["刘铁柱"], category:"电子废品", weight:"约8斤",  createdAt:"2024-01-15 09:05", lastModified:"2024-01-15 10:30" },
   { id:"202401140021", status:"已完成",  userName:"王芳",   phone:"13955667788", address:"深圳市南山区科技园科苑路10号",                 description:"家里旧衣物一大袋，还有几箱矿泉水瓶，一起回收。",             appointmentTime:"2024-01-14 15:00–17:00", images:["https://images.unsplash.com/photo-1562077772-3bd90403f7f0?w=400&h=280&fit=crop"], recyclers:["孙大伟"], category:"塑料",     weight:"约22斤", createdAt:"2024-01-14 11:20", completedAt:"2024-01-14 17:10", lastModified:"2024-01-14 17:10", amount:26.40 },
   { id:"202401130018", status:"已完成",  userName:"周建军", phone:"13612349876", address:"北京市海淀区中关村大街1号",                   description:"废旧铜线一批，电脑主机一台，估计铜线有10公斤。",             appointmentTime:"2024-01-13 10:00–12:00", images:["https://images.unsplash.com/photo-1558618666-fcd25c85cd64?w=400&h=280&fit=crop"], recyclers:["王建国","李明"], category:"常见金属", weight:"约10斤", createdAt:"2024-01-12 20:15", completedAt:"2024-01-13 11:45", lastModified:"2024-01-13 11:45", amount:530.00 },
   { id:"202401140019", status:"已取消",  userName:"刘洋",   phone:"17711223344", address:"成都市武侯区天府大道666号",                   description:"玻璃瓶若干，大约两箱，因搬家需尽快处理。",                   appointmentTime:"2024-01-14 09:00–11:00", images:[], recyclers:[], category:"玻璃",     weight:"—",     createdAt:"2024-01-13 20:44", lastModified:"2024-01-13 20:44" },
-  { id:"202401160004", status:"待接单",  userName:"赵雪梅", phone:"13544332211", address:"杭州市西湖区文三路477号",                     description:"搬家整理出来的旧书和纸箱，约三四十公斤，请尽快上门。",       appointmentTime:"2024-01-16 13:00–15:00", images:["https://images.unsplash.com/photo-1567360425618-1594206637d2?w=400&h=280&fit=crop"], recyclers:[], category:"纸制品",   weight:"约40斤", createdAt:"2024-01-15 21:03", lastModified:"2024-01-15 21:03" },
+  { id:"202401160004", status:"待上门",  userName:"赵雪梅", phone:"13544332211", address:"杭州市西湖区文三路477号",                     description:"搬家整理出来的旧书和纸箱，约三四十公斤，请尽快上门。",       appointmentTime:"2024-01-16 13:00–15:00", images:["https://images.unsplash.com/photo-1567360425618-1594206637d2?w=400&h=280&fit=crop"], recyclers:[], category:"纸制品",   weight:"约40斤", createdAt:"2024-01-15 21:03", lastModified:"2024-01-15 21:03" },
   { id:"202401120010", status:"已完成",  userName:"吴晓峰", phone:"13011112222", address:"上海市静安区南京西路1788号",                   description:"旧家电：洗衣机1台、微波炉1台，另有废铁若干。",               appointmentTime:"2024-01-12 14:00–16:00", images:["https://images.unsplash.com/photo-1604187351574-c75ca79f5807?w=400&h=280&fit=crop"], recyclers:["赵志远"], category:"电子废品", weight:"约35斤", createdAt:"2024-01-11 18:30", completedAt:"2024-01-12 15:40", lastModified:"2024-01-12 15:40", amount:90.00 },
 ];
 
@@ -439,12 +440,12 @@ function RowActions({
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+// 四态状态色板：与小程序端 app.wxss 的 --status-* token 保持同一套色值
 const STATUS_CFG: Record<OrderStatus, { color:string; bg:string; dot:string }> = {
-  待接单: { color:"text-amber-700",  bg:"bg-amber-50 border border-amber-200",  dot:"bg-amber-500"  },
-  已接单: { color:"text-blue-700",   bg:"bg-blue-50 border border-blue-200",    dot:"bg-blue-500"   },
-  回收中: { color:"text-violet-700", bg:"bg-violet-50 border border-violet-200",dot:"bg-violet-500" },
-  已完成: { color:"text-green-700",  bg:"bg-green-50 border border-green-200",  dot:"bg-green-500"  },
-  已取消: { color:"text-gray-500",   bg:"bg-gray-50 border border-gray-200",    dot:"bg-gray-400"   },
+  待上门: { color:"text-[#B25B00]", bg:"bg-[#FEF0E1] border border-[#F7D9B5]", dot:"bg-[#F59E0B]" },
+  进行中: { color:"text-[#1D4ED8]", bg:"bg-[#E3EDFF] border border-[#BFD4FF]", dot:"bg-[#3B82F6]" },
+  已完成: { color:"text-[#166534]", bg:"bg-[#E3F4E8] border border-[#BEE3C8]", dot:"bg-[#22C55E]" },
+  已取消: { color:"text-[#5B6770]", bg:"bg-[#EEF1F4] border border-[#D8DEE4]", dot:"bg-[#9CA3AF]" },
 };
 const STAFF_CFG: Record<StaffStatus,{ label:string; color:string; bg:string; dot:string; next:StaffStatus }> = {
   online:   { label:"在线", color:"text-green-700", bg:"bg-green-50 border border-green-200",  dot:"bg-green-500", next:"resting"  },
@@ -585,7 +586,7 @@ function NewOrderModal({ onSave,onClose,staff,groups,orders }:{ onSave:(o:Order)
     if(!validate()) return;
     const now=nowStr();
     onSave({
-      id: genOrderId(orders), status:"待接单",
+      id: genOrderId(orders), status:"待上门",
       userName:form.userName, phone:form.phone, address:form.address,
       description:form.description, category:form.category, weight:form.weight||"待确认",
       appointmentTime:`${form.appointmentDate} ${form.appointmentSlot}`,
@@ -650,9 +651,9 @@ function NewOrderModal({ onSave,onClose,staff,groups,orders }:{ onSave:(o:Order)
 }
 
 // ─── Order Edit Modal ─────────────────────────────────────────────────────────
-function OrderEditModal({ order,staff,onSave,onClose }:{ order:Order;staff:Staff[];onSave:(o:Order)=>void;onClose:()=>void }) {
+function OrderEditModal({ order,onSave,onClose }:{ order:Order;onSave:(o:Order)=>void;onClose:()=>void }) {
   const [form,setForm]=useState({...order});
-  const statuses:OrderStatus[]=["待接单","已接单","回收中","已完成","已取消"];
+  const statuses:OrderStatus[]=["待上门","进行中","已完成","已取消"];
   const set=<K extends keyof Order>(k:K,v:Order[K])=>setForm(f=>({...f,[k]:v}));
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onClose}>
@@ -681,8 +682,6 @@ function OrderEditModal({ order,staff,onSave,onClose }:{ order:Order;staff:Staff
                 {statuses.map(s=><option key={s}>{s}</option>)}
               </select></div>
           </div>
-          <div><label className="block text-xs font-medium text-gray-500 mb-1.5">回收人员</label>
-            <RecyclerSelect value={form.recyclers} onChange={v=>set("recyclers",v)} staff={staff}/></div>
         </div>
         <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-3">
           <button onClick={onClose} className="px-4 py-2 rounded-lg border border-gray-200 text-sm text-gray-600 hover:bg-gray-50 transition-all">取消</button>
@@ -768,7 +767,7 @@ function AutoAcceptModal({ enabled,minutes,onSave,onClose }:{ enabled:boolean;mi
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={18}/></button>
         </div>
         <div className="px-5 py-5 space-y-4">
-          <p className="text-sm text-gray-500 leading-relaxed">开启后，系统将自动把超时未处理的「待接单」订单变更为「已接单」状态。</p>
+          <p className="text-sm text-gray-500 leading-relaxed">开启后，系统将自动把超时未处理的「待上门」订单变更为「进行中」状态。</p>
           <div className="flex items-center justify-between py-2 border border-gray-100 rounded-xl px-4">
             <div><p className="text-sm font-medium text-gray-800">启用自动接单</p><p className="text-xs text-gray-400 mt-0.5">{en?"当前已开启":"当前已关闭"}</p></div>
             <button onClick={()=>setEn(v=>!v)}>{en?<ToggleRight size={28} className="text-green-500"/>:<ToggleLeft size={28} className="text-gray-300"/>}</button>
@@ -856,7 +855,7 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
     dragCol.current=null;
   };
 
-  const statuses:( OrderStatus|"全部")[]=["全部","待接单","已接单","回收中","已完成","已取消"];
+  const statuses:( OrderStatus|"全部")[]=["全部","待上门","进行中","已完成","已取消"];
   const visibleCols=cols.filter(c=>!hiddenCols.has(c.id));
   const filtered=orders.filter(o=>{
     if(filterStatus!=="全部"&&o.status!==filterStatus)return false;
@@ -958,8 +957,8 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-3 md:grid-cols-6 gap-3">
-        {(["待接单","已接单","回收中","已完成","已取消"] as OrderStatus[]).map(s=>{
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        {(["待上门","进行中","已完成","已取消"] as OrderStatus[]).map(s=>{
           const cnt=filtered.filter(o=>o.status===s).length;
           const cfg=STATUS_CFG[s];
           return(<button key={s} onClick={()=>setFilterStatus(filterStatus===s?"全部":s)} className={`bg-white rounded-xl p-3.5 text-left border transition-all ${filterStatus===s?"border-green-400 shadow-sm":"border-transparent hover:border-gray-200"}`}>
@@ -1105,7 +1104,7 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
         </div>
       </div>
 
-      {editOrder&&<OrderEditModal order={editOrder} staff={staff} onSave={o=>{void onSaveOrder(o).then(()=>setEditOrder(null)).catch(()=>undefined);}} onClose={()=>setEditOrder(null)}/>} 
+      {editOrder&&<OrderEditModal order={editOrder} onSave={o=>{void onSaveOrder(o).then(()=>setEditOrder(null)).catch(()=>undefined);}} onClose={()=>setEditOrder(null)}/>}
       {assigningOrder&&<AssignRecyclerModal order={assigningOrder} staff={staff} onAssign={async(person)=>onAssignRecycler(assigningOrder,person)} onClose={()=>setAssigningOrder(null)}/>}
       {showNew&&<NewOrderModal onSave={()=>{setShowNew(false);onUnsupported("后台新建订单");}} onClose={()=>setShowNew(false)} staff={staff} groups={groups} orders={orders}/>} 
       {previewInfo&&<ImagePreviewModal images={previewInfo.images} initialIndex={previewInfo.idx} onClose={()=>setPreviewInfo(null)}/>} 
@@ -1951,6 +1950,120 @@ const SYS_CFG_COL_KEY = "system-config-column-widths-v1";
 const SYS_CFG_DEFAULT_WIDTHS = ["40%", "auto", "6rem", "10rem", "11rem"];
 const SYS_CFG_MIN_WIDTHS = ["14rem", "10rem", "5rem", "8rem", "9rem"];
 
+// ─── 投诉建议：小程序端提交，后台只读 ─────────────────────────────────────────
+// 投诉建议页目前只做查看：状态徽章与筛选保留，不提供「标记已处理」入口
+function FeedbackPage({items,loading,onRefresh}:{items:FeedbackRecord[];loading:boolean;onRefresh:()=>Promise<void>}){
+  const [search,setSearch]=useState("");
+  const [statusFilter,setStatusFilter]=useState<"all"|"pending"|"handled">("all");
+  const [currentPage,setCurrentPage]=useState(1);
+  const PAGE_SIZE=20;
+
+  const filtered=items.filter((item)=>{
+    if(statusFilter!=="all"&&item.status!==statusFilter)return false;
+    if(!search.trim())return true;
+    const keyword=search.trim().toLowerCase();
+    return [item.content,item.contact,item.userSnapshot?.nickName,item.userSnapshot?.phone,(item.tags||[]).join(" ")]
+      .some((value)=>String(value||"").toLowerCase().includes(keyword));
+  });
+  const pendingCount=items.filter((item)=>item.status==="pending").length;
+  const totalPages=Math.max(1,Math.ceil(filtered.length/PAGE_SIZE));
+  const safePage=Math.min(currentPage,totalPages);
+  const paged=filtered.slice((safePage-1)*PAGE_SIZE,safePage*PAGE_SIZE);
+
+  const contactOf=(item:FeedbackRecord)=>item.contact||item.userSnapshot?.phone||"";
+  const nameOf=(item:FeedbackRecord)=>item.userSnapshot?.nickName||"匿名用户";
+
+  const statusBadge=(item:FeedbackRecord)=>item.status==="handled"
+    ?<span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border bg-green-100 text-green-700 border-green-200"><CheckCircle2 size={11}/>已处理</span>
+    :<span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs border bg-amber-50 text-amber-700 border-amber-200"><AlertCircle size={11}/>待处理</span>;
+
+  const tagChips=(item:FeedbackRecord)=>(item.tags||[]).length===0
+    ?<span className="text-xs text-gray-300">未选标签</span>
+    :<div className="flex flex-wrap gap-1">{(item.tags||[]).map((tag)=>
+        <span key={tag} className="px-2 py-0.5 rounded bg-gray-100 text-gray-600 text-xs whitespace-nowrap">{tag}</span>)}</div>;
+
+  return <div className="p-4 md:p-6 space-y-4 md:space-y-5">
+    <div className="flex items-center justify-between flex-wrap gap-2">
+      <div>
+        <h1 className="text-lg md:text-xl font-semibold text-gray-900">投诉建议</h1>
+        <p className="text-xs md:text-sm text-gray-400 mt-0.5">小程序「我的 - 投诉和建议」提交的内容，共 {items.length} 条，待处理 {pendingCount} 条</p>
+      </div>
+      <button onClick={()=>void onRefresh()} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs text-gray-500 border border-gray-200 hover:bg-gray-50"><RefreshCw size={12} className={loading?"animate-spin":""}/>刷新</button>
+    </div>
+
+    <div className="flex flex-col sm:flex-row gap-2">
+      <div className="relative flex-1">
+        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/>
+        <input value={search} onChange={(event)=>{setSearch(event.target.value);setCurrentPage(1);}} placeholder="搜索内容、标签、昵称或手机号…" className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm bg-white outline-none focus:border-green-400"/>
+      </div>
+      <div className="flex items-center gap-1 bg-white rounded-xl border border-gray-200 p-1">
+        {([["all","全部"],["pending","待处理"],["handled","已处理"]] as const).map(([value,label])=>
+          <button key={value} onClick={()=>{setStatusFilter(value);setCurrentPage(1);}} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${statusFilter===value?"bg-green-50 text-green-700":"text-gray-500 hover:bg-gray-50"}`}>{label}</button>)}
+      </div>
+    </div>
+
+    {/* Mobile Card List */}
+    <div className="md:hidden space-y-3">
+      {paged.length===0?<div className="bg-white rounded-xl p-8 text-center text-sm text-gray-400 border border-gray-100">暂无反馈</div>:paged.map((item)=>
+        <div key={item._id} className="bg-white rounded-xl p-4 border border-gray-100">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-sm font-medium text-gray-800">{nameOf(item)}</p>
+            {statusBadge(item)}
+          </div>
+          <div className="mb-2">{tagChips(item)}</div>
+          {item.content&&<p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap break-words mb-2">{item.content}</p>}
+          <div className="pt-2 border-t border-gray-50">
+            <div className="text-xs text-gray-400 font-mono">{contactOf(item)||"无联系方式"} · {formatCloudTime(item.createTime)}</div>
+          </div>
+        </div>
+      )}
+      <div className="text-center text-xs text-gray-400 py-2">{filtered.length} / {items.length} 条反馈</div>
+    </div>
+
+    {/* Desktop Table */}
+    <div className="hidden md:block bg-white rounded-xl border border-gray-100 overflow-hidden">
+      <table className="w-full">
+        <thead>
+          <tr className="bg-gray-50 border-b border-gray-100">
+            {["提交人","问题标签","反馈内容","提交时间","状态"].map((title)=>
+              <th key={title} className="text-left px-5 py-3 text-xs font-medium text-gray-500 tracking-wide">{title}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {paged.map((item)=>
+            <tr key={item._id} className="border-b border-gray-50 last:border-0 hover:bg-gray-50/50 align-top">
+              <td className="px-5 py-4">
+                <p className="text-sm font-medium text-gray-800 whitespace-nowrap">{nameOf(item)}</p>
+                <p className="text-xs text-gray-400 font-mono mt-0.5 whitespace-nowrap">{contactOf(item)||"—"}</p>
+              </td>
+              <td className="px-5 py-4">{tagChips(item)}</td>
+              <td className="px-5 py-4 max-w-md">
+                {item.content
+                  ?<p className="text-sm text-gray-700 leading-relaxed whitespace-pre-wrap break-words">{item.content}</p>
+                  :<span className="text-xs text-gray-300">未填写描述</span>}
+              </td>
+              <td className="px-5 py-4 text-xs text-gray-400 font-mono whitespace-nowrap">{formatCloudTime(item.createTime)}</td>
+              <td className="px-5 py-4">
+                {statusBadge(item)}
+                {item.status==="handled"&&item.handledBy&&<p className="text-xs text-gray-400 mt-1 whitespace-nowrap">{item.handledBy}</p>}
+              </td>
+            </tr>
+          )}
+          {paged.length===0&&<tr><td colSpan={5} className="px-6 py-16 text-center text-sm text-gray-400">{loading?"正在加载…":"暂无反馈"}</td></tr>}
+        </tbody>
+      </table>
+      <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-between">
+        <span className="text-xs text-gray-400">显示 {paged.length} / {filtered.length} 条</span>
+        <div className="flex items-center gap-1">
+          <button disabled={safePage<=1} onClick={()=>setCurrentPage((page)=>Math.max(1,page-1))} className="w-7 h-7 rounded-lg text-xs flex items-center justify-center border border-gray-200 text-gray-500 disabled:opacity-30">‹</button>
+          <span className="px-2 text-xs text-gray-500">{safePage}/{totalPages}</span>
+          <button disabled={safePage>=totalPages} onClick={()=>setCurrentPage((page)=>Math.min(totalPages,page+1))} className="w-7 h-7 rounded-lg text-xs flex items-center justify-center border border-gray-200 text-gray-500 disabled:opacity-30">›</button>
+        </div>
+      </div>
+    </div>
+  </div>;
+}
+
 function SystemPage({items,onSave,onDelete}:{items:SystemSetting[];onSave:(item:SystemSetting)=>Promise<void>;onDelete:(item:SystemSetting)=>Promise<void>}){
   const [search,setSearch]=useState("");
   const [editing,setEditing]=useState<SystemSetting|null|undefined>(undefined);
@@ -2242,8 +2355,9 @@ function LoginPage({ onLogin }:{ onLogin:()=>void }) {
 }
 
 // ─── Analytics Page ───────────────────────────────────────────────────────────
+// 图表用的四态点色，与 STATUS_CFG 的 dot 色保持一致
 const STATUS_COLORS: Record<string,string> = {
-  "待接单":"#f59e0b","已接单":"#3b82f6","回收中":"#8b5cf6","已完成":"#22c55e","已取消":"#ef4444",
+  "待上门":"#f59e0b","进行中":"#3b82f6","已完成":"#22c55e","已取消":"#9ca3af",
 };
 const CAT_PALETTE = ["#1a7a3c","#27ae60","#3b82f6","#8b5cf6","#f59e0b","#ef4444","#14b8a6","#ec4899"];
 
@@ -2271,7 +2385,7 @@ function AnalyticsPage({ orders }:{ orders:Order[] }) {
 
   // Status pie data
   const statusData=useMemo(()=>
-    (["待接单","已接单","回收中","已完成","已取消"] as OrderStatus[])
+    (["待上门","进行中","已完成","已取消"] as OrderStatus[])
       .map(s=>({name:s,value:filtered.filter(o=>o.status===s).length,color:STATUS_COLORS[s]}))
       .filter(d=>d.value>0),
   [filtered]);
@@ -2564,10 +2678,13 @@ function AnalyticsPage({ orders }:{ orders:Order[] }) {
 }
 
 // ─── Main Layout ──────────────────────────────────────────────────────────────
-function AdminOrderDetailPage({id,token,staff,onSaveOrder,onBack,onError}:{id:string;token:string;staff:Staff[];onSaveOrder:(order:Order)=>Promise<void>;onBack:()=>void;onError:(error:unknown)=>void}){
+function AdminOrderDetailPage({id,token,onSaveOrder,onBack,onError}:{id:string;token:string;onSaveOrder:(order:Order)=>Promise<void>;onBack:()=>void;onError:(error:unknown)=>void}){
   const [editing,setEditing]=useState(false);
   const [order,setOrder]=useState<CloudOrder|null>(null);
   const [loading,setLoading]=useState(true);
+  const [finalPriceText,setFinalPriceText]=useState("");
+  const [adminRemarkText,setAdminRemarkText]=useState("");
+  const [savingResult,setSavingResult]=useState(false);
   const reload=useCallback(async()=>{
     setLoading(true);
     try{
@@ -2577,10 +2694,25 @@ function AdminOrderDetailPage({id,token,staff,onSaveOrder,onBack,onError}:{id:st
     finally{setLoading(false);}
   },[id,token,onError]);
   useEffect(()=>{void reload();},[reload]);
+  useEffect(()=>{
+    if(!order)return;
+    setFinalPriceText(order.finalPrice==null?"":String(order.finalPrice));
+    setAdminRemarkText(order.adminRemark||"");
+  },[order]);
+  const saveResult=async()=>{
+    if(!order)return;
+    setSavingResult(true);
+    try{
+      await onSaveOrder({...cloudOrderToFigma(order),amount:finalPriceText===""?undefined:Number(finalPriceText),adminRemark:adminRemarkText});
+      // 保存成功后直接回写本地状态，避免 reload 让页面重新进入 loading
+      setOrder({...order,finalPrice:finalPriceText===""?null:Number(finalPriceText),adminRemark:adminRemarkText,updateTime:Date.now()});
+    }catch{/* saveOrder 内部已统一提示错误 */}
+    finally{setSavingResult(false);}
+  };
   if(loading)return <div className="min-h-[520px] flex items-center justify-center gap-3 text-gray-400"><Loader size={22} className="animate-spin text-green-600"/><span className="text-sm">正在读取订单详情…</span></div>;
   if(!order)return <div className="p-6"><button onClick={onBack} className="text-sm text-green-700">← 返回订单列表</button><div className="mt-8 bg-white rounded-xl p-12 text-center text-gray-400">订单不存在或加载失败</div></div>;
   const address=order.addressSnapshot||{};
-  const status=CLOUD_TO_FIGMA_STATUS[order.status]||"待接单";
+  const status=CLOUD_TO_FIGMA_STATUS[order.status]||"待上门";
   const businessOrderType=resolveBusinessOrderType(order);
   const detailItems=order.source==="demolition"
     ? (order.demolition?.items||[]).map((name)=>({categoryName:name,demolition:true,estWeight:undefined,estCount:undefined}))
@@ -2591,11 +2723,11 @@ function AdminOrderDetailPage({id,token,staff,onSaveOrder,onBack,onError}:{id:st
       <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">联系人与预约</h2><div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 text-sm"><DetailField label="联系人" value={address.contactName}/><DetailField label="联系电话" value={address.phone}/><DetailField label="预约日期" value={order.appointDate}/><DetailField label="预约时段" value={order.appointSlot}/><div className="md:col-span-2"><DetailField label="上门地址" value={[address.region,address.detail].filter(Boolean).join(" ")}/></div></div></section>
       <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">订单信息</h2><div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 text-sm"><DetailField label="订单类型" value={ORDER_TYPE_LABEL[businessOrderType]}/><DetailField label="最后修改" value={formatCloudTime(order.updateTime)}/><div className="md:col-span-2"><DetailField label="物品摘要" value={order.summary}/></div><div className="md:col-span-2"><DetailField label="用户备注" value={order.remark}/></div></div></section>
       <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">物品明细</h2>{detailItems.length>0?<div className="divide-y divide-gray-100">{detailItems.map((item,index)=><div key={`${item.categoryName}-${index}`} className="py-3 flex justify-between text-sm"><span className="font-medium text-gray-700">{item.categoryName||"未命名项目"}</span><span className="text-gray-500">{item.demolition?"拆除评估":item.estWeight?`约 ${item.estWeight} kg`:item.estCount?`约 ${item.estCount} 件`:"待现场确认"}</span></div>)}</div>:<p className="text-sm text-gray-400">暂无结构化物品明细</p>}</section>
-      <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">处理结果</h2><div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 text-sm"><DetailField label="平台估价" value={order.estimatePrice==null?"—":`¥${Number(order.estimatePrice).toFixed(2)}`}/><DetailField label="最终金额" value={order.finalPrice==null?"—":`¥${Number(order.finalPrice).toFixed(2)}`}/><DetailField label="实际重量" value={order.finalWeight==null?"—":`${order.finalWeight} kg`}/><DetailField label="实际件数" value={order.finalCount==null?"—":`${order.finalCount} 件`}/><DetailField label="回收人员" value={order.recyclerName}/><DetailField label="人员电话" value={order.recyclerPhone}/><div className="md:col-span-2"><DetailField label="管理备注" value={order.adminRemark}/></div>{order.cancelReason&&<div className="md:col-span-2"><DetailField label="取消原因" value={order.cancelReason}/></div>}</div></section>
+      <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><div className="flex items-center justify-between"><h2 className="font-semibold text-gray-800">处理结果</h2><button onClick={saveResult} disabled={savingResult} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-white hover:opacity-90 disabled:opacity-50" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}><Save size={13}/>{savingResult?"保存中…":"保存"}</button></div><div className="space-y-3"><div><label className="block text-xs font-medium text-gray-500 mb-1.5">最终金额（元）</label><input type="number" step="0.01" value={finalPriceText} onChange={e=>setFinalPriceText(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50 transition-all"/></div><div><label className="block text-xs font-medium text-gray-500 mb-1.5">备注</label><textarea value={adminRemarkText} onChange={e=>setAdminRemarkText(e.target.value)} rows={3} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50 transition-all resize-none"/></div>{order.cancelReason&&<DetailField label="取消原因" value={order.cancelReason}/>}</div></section>
     </div>
     <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">物品照片</h2>{order.photoUrls&&order.photoUrls.length>0?<div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">{order.photoUrls.map((url,index)=><a key={url} href={cloudUrlToHttps(url)} target="_blank" rel="noreferrer"><img src={cloudUrlToHttps(url)} alt={`物品照片 ${index+1}`} className="w-full aspect-square object-cover rounded-lg border border-gray-100"/></a>)}</div>:<p className="text-sm text-gray-400">暂无物品照片</p>}</section>
     {order.transferProofUrls&&order.transferProofUrls.length>0&&<section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">打款凭证</h2><div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">{order.transferProofUrls.map((url,index)=><a key={url} href={cloudUrlToHttps(url)} target="_blank" rel="noreferrer"><img src={cloudUrlToHttps(url)} alt={`打款凭证 ${index+1}`} className="w-full aspect-square object-cover rounded-lg border border-gray-100"/></a>)}</div></section>}
-    {editing&&<OrderEditModal order={cloudOrderToFigma(order)} staff={staff} onSave={async(o)=>{try{await onSaveOrder(o);setEditing(false);await reload();}catch{setEditing(false);}}} onClose={()=>setEditing(false)}/>}
+    {editing&&<OrderEditModal order={cloudOrderToFigma(order)} onSave={async(o)=>{try{await onSaveOrder(o);setEditing(false);await reload();}catch{setEditing(false);}}} onClose={()=>setEditing(false)}/>}
   </div>;
 }
 
@@ -2644,7 +2776,7 @@ function UserDetailPage({userId,token,onBack,onViewOrder,onError}:{userId:string
         <h2 className="font-semibold text-gray-800 flex items-center gap-2"><Package size={16} className="text-green-600"/>订单记录（{orders.length}）</h2>
         {orders.length===0?<p className="text-sm text-gray-400">暂无订单</p>:
         <div className="space-y-2">{orders.map(o=>{
-          const fStatus=CLOUD_TO_FIGMA_STATUS[o.status as CloudOrderStatus]||"待接单";
+          const fStatus=CLOUD_TO_FIGMA_STATUS[o.status as CloudOrderStatus]||"待上门";
           return <div key={o._id} onClick={()=>onViewOrder(o._id)} className="bg-gray-50 rounded-lg p-3 cursor-pointer hover:bg-gray-100 transition-colors">
             <div className="flex items-center justify-between mb-1">
               <span className="text-xs font-mono text-gray-500 truncate">{o.orderNo||o._id}</span>
@@ -2670,6 +2802,7 @@ const NAV=[
   {id:"staff"     as Page, path:"/staff",      label:"人员管理", icon:Users    },
   {id:"cats"      as Page, path:"/categories", label:"品类管理", icon:Tags     },
   {id:"analytics" as Page, path:"/analytics",  label:"分析统计", icon:BarChart2},
+  {id:"feedback"  as Page, path:"/feedback",   label:"投诉建议", icon:MessageSquare},
   {id:"system"    as Page, path:"/settings",   label:"系统配置", icon:Settings },
 ];
 
@@ -2678,6 +2811,7 @@ const pageFromPath=(pathname:string):Page|null=>{
   if(pathname==="/staff"||pathname.startsWith("/users/"))return "staff";
   if(pathname==="/categories"||pathname==="/cats")return "cats";
   if(pathname==="/analytics")return "analytics";
+  if(pathname==="/feedback")return "feedback";
   if(pathname==="/settings"||pathname==="/system")return "system";
   return null;
 };
@@ -2697,6 +2831,7 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
   const [groups,setGroups]=useState<RecycleGroup[]>([]);
   const [categoryTree,setCategoryTree]=useState<CategoryNode[]>([]);
   const [systemSettings,setSystemSettings]=useState<SystemSetting[]>([]);
+  const [feedbacks,setFeedbacks]=useState<FeedbackRecord[]>([]);
   const [loading,setLoading]=useState(true);
   const [mobileMenuOpen,setMobileMenuOpen]=useState(false);
 
@@ -2724,6 +2859,12 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
     return callCloud<CloudCategory[]>("adminListCategories",{sessionToken:token});
   };
 
+  // 投诉建议：云端按 createTime 倒序分页，这里一次拉满 pageSize 上限后在页面内做筛选
+  const loadFeedbacks=async()=>{
+    const result=await callCloud<FeedbackListResult>("adminListFeedbacks",{sessionToken:token,page:1,pageSize:50});
+    return result?.list||[];
+  };
+
   const refresh=async()=>{
     setLoading(true);
     try {
@@ -2748,12 +2889,13 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
         onError(error);
       }
 
-      const [categoriesResult,settingsResult,usersResult,staffResult,adminsResult]=await Promise.allSettled([
+      const [categoriesResult,settingsResult,usersResult,staffResult,adminsResult,feedbacksResult]=await Promise.allSettled([
         loadCategories(),
         loadSystemSettings(),
         callCloud<UserRecord[]>("adminListUsers",{sessionToken:token}),
         callCloud<StaffRecord[]>("adminListStaff",{sessionToken:token}),
         callCloud<AdminRecord[]>("adminListAdmins",{sessionToken:token}),
+        loadFeedbacks(),
       ]);
       if(categoriesResult.status==="fulfilled"){
         const categories=categoriesResult.value||[];
@@ -2764,6 +2906,7 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
       if(usersResult.status==="fulfilled")setUsers(usersResult.value||[]);
       if(staffResult.status==="fulfilled")setStaff(staffFromCloud(staffResult.value||[]));
       if(adminsResult.status==="fulfilled")setAdmins(adminsResult.value||[]);
+      if(feedbacksResult.status==="fulfilled")setFeedbacks(feedbacksResult.value||[]);
 
       const failedAuxiliary=[categoriesResult,settingsResult,usersResult,staffResult]
         .find((result)=>result.status==="rejected");
@@ -2820,13 +2963,7 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
         sessionToken:token,
         id:order.docId,
         status:FIGMA_TO_CLOUD_STATUS[order.status],
-        estimatePrice:order.estimatePrice ?? "",
-        finalWeight:order.finalWeight ?? "",
-        finalCount:order.finalCount ?? "",
         finalPrice:order.amount ?? "",
-        recyclerId:staff.find((item)=>item.name===order.recyclers[0])?.docId || "",
-        recyclerName:order.recyclers[0] || "",
-        recyclerPhone:order.recyclerPhone || "",
         adminRemark:order.adminRemark || "",
         cancelReason:order.cancelReason || (order.status==="已取消"?"管理员取消":""),
       });
@@ -2845,7 +2982,9 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
       await callCloud("adminAssignOrderRecycler",{sessionToken:token,orderId:order.docId,staffId:person.docId});
       setOrders((current)=>current.map((item)=>item.docId===order.docId?{
         ...item,
-        status:item.status==="待接单"?"已接单":item.status,
+        // 派单后落到「进行中」：云端写的是 processing，前端必须映射到同一个 label，
+        // 否则列表与详情页会显示两个不同状态
+        status:item.status==="待上门"?"进行中":item.status,
         recyclers:[person.name],
         recyclerPhone:person.phone,
         lastModified:nowStr(),
@@ -2922,6 +3061,12 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
     }catch(error){onError(error);throw error;}
   };
 
+  const reloadFeedbacks=async()=>{
+    try{
+      setFeedbacks(await loadFeedbacks());
+    }catch(error){onError(error);throw error;}
+  };
+
   return(
     <div className="h-screen flex overflow-hidden" style={{fontFamily:"'Noto Sans SC',sans-serif"}}>
       {/* 移动端遮罩 */}
@@ -2960,11 +3105,12 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
           </div>
           <div className="flex items-center gap-2 text-xs text-gray-400"><div className="w-2 h-2 rounded-full bg-green-400 animate-pulse"/><span className="hidden sm:inline">系统运行正常</span></div>
         </div>
-        {detailId?<AdminOrderDetailPage id={detailId} token={token} staff={staff} onSaveOrder={saveOrder} onBack={()=>navigate("/orders")} onError={onError}/>:userDetailId?<UserDetailPage userId={userDetailId} token={token} onBack={()=>navigate("/staff")} onViewOrder={(id)=>navigate(`/orders/${encodeURIComponent(id)}`)} onError={onError}/>:loading?<div className="min-h-[420px] flex flex-col items-center justify-center text-gray-400 gap-3"><Loader size={24} className="animate-spin text-green-600"/><p className="text-sm">正在加载真实业务数据…</p></div>:<>
+        {detailId?<AdminOrderDetailPage id={detailId} token={token} onSaveOrder={saveOrder} onBack={()=>navigate("/orders")} onError={onError}/>:userDetailId?<UserDetailPage userId={userDetailId} token={token} onBack={()=>navigate("/staff")} onViewOrder={(id)=>navigate(`/orders/${encodeURIComponent(id)}`)} onError={onError}/>:loading?<div className="min-h-[420px] flex flex-col items-center justify-center text-gray-400 gap-3"><Loader size={24} className="animate-spin text-green-600"/><p className="text-sm">正在加载真实业务数据…</p></div>:<>
           {page==="orders"    &&<OrdersPage staff={staff} groups={groups} orders={orders} onSaveOrder={saveOrder} onAssignRecycler={assignOrderRecycler} onUnsupported={unsupported} onViewOrder={(id)=>navigate(`/orders/${encodeURIComponent(id)}`)}/>}
           {page==="staff"     &&<StaffPage staff={staff} users={users} admins={admins} onSaveStaff={saveStaff} onSaveAdmin={saveAdmin} onToggleAdmin={toggleAdmin} onViewUser={(id)=>navigate(`/users/${encodeURIComponent(id)}`)}/>}
           {page==="cats"      &&<CategoryTreePage nodes={categoryTree} onSave={saveCategoryNode} onDelete={deleteCategory}/>}
           {page==="analytics" &&<AnalyticsPage orders={orders}/>} 
+          {page==="feedback"  &&<FeedbackPage items={feedbacks} loading={loading} onRefresh={reloadFeedbacks}/>}
           {page==="system"    &&<SystemPage items={systemSettings} onSave={saveSystemSetting} onDelete={deleteSystemSetting}/>}
         </>}
       </main>
