@@ -9,7 +9,8 @@ export interface AddressSnapshot {
 
 export interface OrderItem {
   categoryName?: string;
-  unit?: "kg" | "件";
+  /** 品类单位（斤/kg/件/台等），由小程序下单时写入；旧订单可能缺失 */
+  unit?: string;
   estWeight?: number;
   estCount?: number;
 }
