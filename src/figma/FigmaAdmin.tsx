@@ -2996,6 +2996,9 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
         cancelReason:order.cancelReason || (order.status==="已取消"?"管理员取消":""),
         // transferProofs 为 undefined 时不下发，云函数据此保留原有凭证不清空
         ...(order.transferProofs?{transferProofs:order.transferProofs}:{}),
+        // 实际重量/件数：空值不下发（undefined 时云函数跳过，不误清已有值）
+        ...(order.finalWeight!=null?{finalWeight:order.finalWeight}:{}),
+        ...(order.finalCount!=null?{finalCount:order.finalCount}:{}),
       });
       notify({kind:"success",text:"订单已更新"});
       await refresh();
