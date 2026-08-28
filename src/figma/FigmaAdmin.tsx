@@ -14,7 +14,7 @@ import {
   PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from "recharts";
 import { useLocation, useNavigate } from "react-router-dom";
-import { callCloud, uploadSystemImage, cloudUrlToHttps, cloudUrlsToHttps } from "../api/cloud";
+import { callCloud, uploadSystemImage, uploadTransferProof, cloudUrlToHttps, cloudUrlsToHttps } from "../api/cloud";
 import type {
   AdminRecord,
   Category as CloudCategory,
@@ -69,6 +69,7 @@ interface Order {
   docId?: string;
   estimatePrice?: number | null; finalWeight?: number | null; finalCount?: number | null;
   recyclerPhone?: string; adminRemark?: string; cancelReason?: string;
+  transferProofs?: string[];
 }
 interface ColDef { id: string; label: string; width: number; minWidth: number; fixed?: boolean; alwaysVisible?: boolean; }
 
@@ -141,12 +142,14 @@ const cloudOrderToFigma = (order: CloudOrder): Order => {
   const itemNames = order.source==="demolition"
     ? order.demolition?.items||[]
     : (order.items || []).map((item) => item.categoryName).filter(Boolean) as string[];
+  // 重量单位优先取品类快照 unit（斤/kg），旧订单缺失时按项目主单位「斤」
+  const weightUnit = order.items?.find((item) => item.estWeight)?.unit || "斤";
   const quantity = order.finalWeight
-    ? `${order.finalWeight}kg`
+    ? `${order.finalWeight}斤`
     : order.finalCount
       ? `${order.finalCount}件`
       : order.items?.find((item) => item.estWeight)?.estWeight
-        ? `约${order.items.find((item) => item.estWeight)?.estWeight}kg`
+        ? `约${order.items.find((item) => item.estWeight)?.estWeight}${weightUnit}`
         : order.items?.find((item) => item.estCount)?.estCount
           ? `约${order.items.find((item) => item.estCount)?.estCount}件`
           : "—";
@@ -175,6 +178,7 @@ const cloudOrderToFigma = (order: CloudOrder): Order => {
     recyclerPhone: order.recyclerPhone,
     adminRemark: order.adminRemark,
     cancelReason: order.cancelReason,
+    transferProofs: order.transferProofs,
   };
 };
 
@@ -857,8 +861,8 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
 
   const statuses:( OrderStatus|"全部")[]=["全部","待上门","进行中","已完成","已取消"];
   const visibleCols=cols.filter(c=>!hiddenCols.has(c.id));
-  const filtered=orders.filter(o=>{
-    if(filterStatus!=="全部"&&o.status!==filterStatus)return false;
+  // 除状态外的筛选条件；统计卡基于它计算，避免选中某状态后其余状态数变 0
+  const matchesNonStatus=(o:Order)=>{
     const q=search.toLowerCase();
     if(q&&!o.id.includes(q)&&!o.userName.includes(q)&&!o.phone.includes(q)&&!o.description.includes(q)&&!o.category.includes(q))return false;
     if(dateFrom||dateTo){
@@ -869,8 +873,9 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
       if(dateTo&&d&&d>new Date(dateTo))return false;
     }
     return true;
-  });
-  const totalAmount=filtered.filter(o=>o.status==="已完成").reduce((s,o)=>s+(o.amount??0),0);
+  };
+  const statsBase=orders.filter(matchesNonStatus);
+  const filtered=statsBase.filter(o=>filterStatus==="全部"||o.status===filterStatus);
   const totalPages=Math.max(1,Math.ceil(filtered.length/PAGE_SIZE));
   const safePage=Math.min(currentPage,totalPages);
   const pagedOrders=filtered.slice((safePage-1)*PAGE_SIZE,safePage*PAGE_SIZE);
@@ -957,17 +962,14 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
       </div>
 
       {/* Stats */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+      <div className="grid grid-cols-4 gap-2 md:gap-3">
         {(["待上门","进行中","已完成","已取消"] as OrderStatus[]).map(s=>{
-          const cnt=filtered.filter(o=>o.status===s).length;
+          const cnt=statsBase.filter(o=>o.status===s).length;
           const cfg=STATUS_CFG[s];
-          return(<button key={s} onClick={()=>setFilterStatus(filterStatus===s?"全部":s)} className={`bg-white rounded-xl p-3.5 text-left border transition-all ${filterStatus===s?"border-green-400 shadow-sm":"border-transparent hover:border-gray-200"}`}>
-            <p className={`text-xl font-bold font-mono ${cfg.color}`}>{cnt}</p><p className="text-xs text-gray-400 mt-1">{s}</p>
+          return(<button key={s} onClick={()=>setFilterStatus(filterStatus===s?"全部":s)} className={`bg-white rounded-xl px-2 py-3 md:p-3.5 text-center md:text-left border transition-all ${filterStatus===s?"border-green-400 shadow-sm":"border-transparent hover:border-gray-200"}`}>
+            <p className={`text-lg md:text-xl font-bold font-mono ${cfg.color}`}>{cnt}</p><p className="text-[11px] md:text-xs text-gray-400 mt-1 whitespace-nowrap">{s}</p>
           </button>);
         })}
-        <div className="bg-white rounded-xl p-3.5 border border-green-100">
-          <p className="text-xl font-bold font-mono text-green-700">¥{totalAmount.toFixed(2)}</p><p className="text-xs text-gray-400 mt-1">已回收金额</p>
-        </div>
       </div>
 
       {/* Filters */}
@@ -998,19 +1000,16 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
 
       {/* Mobile Filter Toggle */}
       <div className="md:hidden">
-        <button onClick={()=>setMobileFilterOpen(v=>!v)} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium border transition-all ${mobileFilterOpen||search||filterStatus!=="全部"||dateFrom||dateTo?"border-green-400 text-green-700 bg-green-50":"border-gray-200 text-gray-600 bg-white"}`}>
+        <button onClick={()=>setMobileFilterOpen(v=>!v)} className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium border transition-all ${mobileFilterOpen||search||dateFrom||dateTo?"border-green-400 text-green-700 bg-green-50":"border-gray-200 text-gray-600 bg-white"}`}>
           <Filter size={14}/>
           <span>筛选</span>
-          {(search||filterStatus!=="全部"||dateFrom||dateTo)&&<span className="ml-auto flex items-center justify-center w-5 h-5 rounded-full bg-green-600 text-white text-[10px] font-bold">!</span>}
+          {(search||dateFrom||dateTo)&&<span className="ml-auto flex items-center justify-center w-5 h-5 rounded-full bg-green-600 text-white text-[10px] font-bold">!</span>}
         </button>
         {mobileFilterOpen&&(
           <div className="mt-2 bg-white rounded-xl p-4 space-y-3 border border-gray-100">
             <div className="relative">
               <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/>
               <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="搜索订单号、用户名、电话…" className="w-full pl-9 pr-4 py-2.5 rounded-lg border border-gray-200 text-sm outline-none focus:border-green-400 transition-all"/>
-            </div>
-            <div className="flex gap-1.5 flex-wrap">
-              {statuses.map(s=>(<button key={s} onClick={()=>setFilterStatus(s)} className={`px-3 py-2 rounded-lg text-xs font-medium transition-all ${filterStatus===s?"bg-green-600 text-white":"bg-gray-100 text-gray-500"}`}>{s}</button>))}
             </div>
             <div className="pt-2 border-t border-gray-50 space-y-2">
               <div className="flex gap-1.5">
@@ -2685,6 +2684,11 @@ function AdminOrderDetailPage({id,token,onSaveOrder,onBack,onError}:{id:string;t
   const [finalPriceText,setFinalPriceText]=useState("");
   const [adminRemarkText,setAdminRemarkText]=useState("");
   const [savingResult,setSavingResult]=useState(false);
+  const [proofs,setProofs]=useState<string[]>([]);
+  const [proofPreviews,setProofPreviews]=useState<string[]>([]);
+  const [uploadingProof,setUploadingProof]=useState(false);
+  const [proofError,setProofError]=useState("");
+  const proofInputRef=useRef<HTMLInputElement>(null);
   const reload=useCallback(async()=>{
     setLoading(true);
     try{
@@ -2698,14 +2702,39 @@ function AdminOrderDetailPage({id,token,onSaveOrder,onBack,onError}:{id:string;t
     if(!order)return;
     setFinalPriceText(order.finalPrice==null?"":String(order.finalPrice));
     setAdminRemarkText(order.adminRemark||"");
+    setProofs(order.transferProofs||[]);
+    setProofPreviews(order.transferProofUrls||[]);
   },[order]);
+  // 打款凭证上传：最多 9 张，JPG/PNG/WebP，单张 ≤10MB
+  const pickProofs=async(fileList:FileList|null)=>{
+    if(!order||!fileList||fileList.length===0)return;
+    const files=Array.from(fileList);
+    setProofError("");
+    if(proofs.length+files.length>9){setProofError("最多上传 9 张凭证");return;}
+    const invalid=files.find((file)=>!["image/jpeg","image/png","image/webp"].includes(file.type)||file.size>10*1024*1024);
+    if(invalid){setProofError("仅支持 JPG / PNG / WebP，单张不超过 10MB");return;}
+    setUploadingProof(true);
+    try{
+      const fileIDs=await Promise.all(files.map((file)=>uploadTransferProof(order.orderNo,file)));
+      setProofs([...proofs,...fileIDs]);
+      setProofPreviews([...proofPreviews,...fileIDs.map(cloudUrlToHttps)]);
+    }catch(error){onError(error);setProofError("上传失败，请重试");}
+    finally{
+      setUploadingProof(false);
+      if(proofInputRef.current)proofInputRef.current.value="";
+    }
+  };
+  const removeProof=(index:number)=>{
+    setProofs(proofs.filter((_,i)=>i!==index));
+    setProofPreviews(proofPreviews.filter((_,i)=>i!==index));
+  };
   const saveResult=async()=>{
     if(!order)return;
     setSavingResult(true);
     try{
-      await onSaveOrder({...cloudOrderToFigma(order),amount:finalPriceText===""?undefined:Number(finalPriceText),adminRemark:adminRemarkText});
+      await onSaveOrder({...cloudOrderToFigma(order),amount:finalPriceText===""?undefined:Number(finalPriceText),adminRemark:adminRemarkText,transferProofs:proofs});
       // 保存成功后直接回写本地状态，避免 reload 让页面重新进入 loading
-      setOrder({...order,finalPrice:finalPriceText===""?null:Number(finalPriceText),adminRemark:adminRemarkText,updateTime:Date.now()});
+      setOrder({...order,finalPrice:finalPriceText===""?null:Number(finalPriceText),adminRemark:adminRemarkText,transferProofs:proofs,transferProofUrls:proofPreviews,updateTime:Date.now()});
     }catch{/* saveOrder 内部已统一提示错误 */}
     finally{setSavingResult(false);}
   };
@@ -2723,10 +2752,9 @@ function AdminOrderDetailPage({id,token,onSaveOrder,onBack,onError}:{id:string;t
       <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">联系人与预约</h2><div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 text-sm"><DetailField label="联系人" value={address.contactName}/><DetailField label="联系电话" value={address.phone}/><DetailField label="预约日期" value={order.appointDate}/><DetailField label="预约时段" value={order.appointSlot}/><div className="md:col-span-2"><DetailField label="上门地址" value={[address.region,address.detail].filter(Boolean).join(" ")}/></div></div></section>
       <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">订单信息</h2><div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 text-sm"><DetailField label="订单类型" value={ORDER_TYPE_LABEL[businessOrderType]}/><DetailField label="最后修改" value={formatCloudTime(order.updateTime)}/><div className="md:col-span-2"><DetailField label="物品摘要" value={order.summary}/></div><div className="md:col-span-2"><DetailField label="用户备注" value={order.remark}/></div></div></section>
       <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">物品明细</h2>{detailItems.length>0?<div className="divide-y divide-gray-100">{detailItems.map((item,index)=><div key={`${item.categoryName}-${index}`} className="py-3 flex justify-between text-sm"><span className="font-medium text-gray-700">{item.categoryName||"未命名项目"}</span><span className="text-gray-500">{item.demolition?"拆除评估":item.estWeight?`约 ${item.estWeight} kg`:item.estCount?`约 ${item.estCount} 件`:"待现场确认"}</span></div>)}</div>:<p className="text-sm text-gray-400">暂无结构化物品明细</p>}</section>
-      <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><div className="flex items-center justify-between"><h2 className="font-semibold text-gray-800">处理结果</h2><button onClick={saveResult} disabled={savingResult} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-white hover:opacity-90 disabled:opacity-50" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}><Save size={13}/>{savingResult?"保存中…":"保存"}</button></div><div className="space-y-3"><div><label className="block text-xs font-medium text-gray-500 mb-1.5">最终金额（元）</label><input type="number" step="0.01" value={finalPriceText} onChange={e=>setFinalPriceText(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50 transition-all"/></div><div><label className="block text-xs font-medium text-gray-500 mb-1.5">备注</label><textarea value={adminRemarkText} onChange={e=>setAdminRemarkText(e.target.value)} rows={3} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50 transition-all resize-none"/></div>{order.cancelReason&&<DetailField label="取消原因" value={order.cancelReason}/>}</div></section>
+      <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><div className="flex items-center justify-between"><h2 className="font-semibold text-gray-800">处理结果</h2><button onClick={saveResult} disabled={savingResult} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-white hover:opacity-90 disabled:opacity-50" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}><Save size={13}/>{savingResult?"保存中…":"保存"}</button></div><div className="space-y-3"><div><label className="block text-xs font-medium text-gray-500 mb-1.5">最终金额（元）</label><input type="number" step="0.01" value={finalPriceText} onChange={e=>setFinalPriceText(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50 transition-all"/></div><div><label className="block text-xs font-medium text-gray-500 mb-1.5">备注</label><textarea value={adminRemarkText} onChange={e=>setAdminRemarkText(e.target.value)} rows={3} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50 transition-all resize-none"/></div><div><label className="block text-xs font-medium text-gray-500 mb-1.5">打款截图 / 凭证（选填，最多 9 张）</label><input ref={proofInputRef} type="file" accept="image/jpeg,image/png,image/webp" multiple className="hidden" onChange={e=>void pickProofs(e.target.files)}/><div className="grid grid-cols-3 md:grid-cols-4 gap-2.5">{proofPreviews.map((url,index)=><div key={`${url}-${index}`} className="relative group"><a href={cloudUrlToHttps(url)} target="_blank" rel="noreferrer"><img src={cloudUrlToHttps(url)} alt={`打款凭证 ${index+1}`} className="w-full aspect-square object-cover rounded-lg border border-gray-100"/></a><button type="button" onClick={()=>removeProof(index)} className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-red-500" title="移除"><X size={11}/></button></div>)}{proofs.length<9&&<button type="button" onClick={()=>proofInputRef.current?.click()} disabled={uploadingProof} className="w-full aspect-square rounded-lg border-2 border-dashed border-gray-200 bg-gray-50 hover:border-green-300 flex flex-col items-center justify-center gap-1 text-gray-400 disabled:opacity-60"><Upload size={18}/><span className="text-[11px]">{uploadingProof?"上传中…":"上传图片"}</span></button>}</div><p className="text-[11px] text-gray-400 mt-2">JPG / PNG / WebP，单张不超过 10MB；需点击「保存」后生效</p>{proofError&&<p className="text-xs text-red-500 mt-1">{proofError}</p>}</div>{order.cancelReason&&<DetailField label="取消原因" value={order.cancelReason}/>}</div></section>
     </div>
     <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">物品照片</h2>{order.photoUrls&&order.photoUrls.length>0?<div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">{order.photoUrls.map((url,index)=><a key={url} href={cloudUrlToHttps(url)} target="_blank" rel="noreferrer"><img src={cloudUrlToHttps(url)} alt={`物品照片 ${index+1}`} className="w-full aspect-square object-cover rounded-lg border border-gray-100"/></a>)}</div>:<p className="text-sm text-gray-400">暂无物品照片</p>}</section>
-    {order.transferProofUrls&&order.transferProofUrls.length>0&&<section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">打款凭证</h2><div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">{order.transferProofUrls.map((url,index)=><a key={url} href={cloudUrlToHttps(url)} target="_blank" rel="noreferrer"><img src={cloudUrlToHttps(url)} alt={`打款凭证 ${index+1}`} className="w-full aspect-square object-cover rounded-lg border border-gray-100"/></a>)}</div></section>}
     {editing&&<OrderEditModal order={cloudOrderToFigma(order)} onSave={async(o)=>{try{await onSaveOrder(o);setEditing(false);await reload();}catch{setEditing(false);}}} onClose={()=>setEditing(false)}/>}
   </div>;
 }
@@ -2966,6 +2994,8 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
         finalPrice:order.amount ?? "",
         adminRemark:order.adminRemark || "",
         cancelReason:order.cancelReason || (order.status==="已取消"?"管理员取消":""),
+        // transferProofs 为 undefined 时不下发，云函数据此保留原有凭证不清空
+        ...(order.transferProofs?{transferProofs:order.transferProofs}:{}),
       });
       notify({kind:"success",text:"订单已更新"});
       await refresh();
@@ -3068,11 +3098,11 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
   };
 
   return(
-    <div className="h-screen flex overflow-hidden" style={{fontFamily:"'Noto Sans SC',sans-serif"}}>
+    <div className="h-full flex overflow-hidden" style={{fontFamily:"'Noto Sans SC',sans-serif"}}>
       {/* 移动端遮罩 */}
       {mobileMenuOpen&&<div className="fixed inset-0 z-40 bg-black/40 md:hidden" onClick={()=>setMobileMenuOpen(false)}/>}
       {/* 侧边栏 */}
-      <aside className={`fixed inset-y-0 left-0 z-50 w-60 h-screen flex-shrink-0 flex flex-col bg-white border-r border-gray-100 transition-transform duration-200 md:relative md:translate-x-0 ${mobileMenuOpen?"translate-x-0":"-translate-x-full"}`}>
+      <aside className={`fixed inset-y-0 left-0 z-50 w-60 h-full flex-shrink-0 flex flex-col bg-white border-r border-gray-100 transition-transform duration-200 md:relative md:translate-x-0 ${mobileMenuOpen?"translate-x-0":"-translate-x-full"}`}>
         <div className="px-5 py-5 border-b border-gray-100 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-green-50"><RefreshCw size={18} className="text-green-600"/></div>
@@ -3096,7 +3126,7 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
           <button onClick={onLogout} className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-gray-400 hover:text-green-700 hover:bg-green-50 transition-colors min-h-[44px]"><LogOut size={14}/>退出登录</button>
         </div>
       </aside>
-      <main className="h-screen min-w-0 flex-1 overflow-y-auto bg-gray-50">
+      <main className="h-full min-w-0 flex-1 overflow-y-auto bg-gray-50" style={{WebkitOverflowScrolling:"touch",overscrollBehavior:"contain"}}>
         <div className="bg-white border-b border-gray-100 px-4 md:px-6 py-3.5 flex items-center justify-between sticky top-0 z-30">
           <div className="flex items-center gap-2">
             <button onClick={()=>setMobileMenuOpen(true)} className="md:hidden p-2 -ml-2 rounded-lg text-gray-500 hover:bg-gray-100 min-h-[44px] min-w-[44px] flex items-center justify-center"><Menu size={20}/></button>
