@@ -155,7 +155,7 @@ function App() {
   );
 
   if (fatalError) return <SystemError text={fatalError} />;
-  if (!ready || checkingAuth) return <FullscreenLoading text="正在连接帮帮回收服务…" />;
+  if (!ready || checkingAuth) return <FullscreenLoading text="正在连接来卖吧服务…" />;
 
   return (
     <>
@@ -288,8 +288,8 @@ function LoginPage({ onSuccess }: { onSuccess: (auth: AuthState) => void }) {
     <main className="login-page">
       <section className="login-card">
         <div className="login-brand">
-          <span className="login-brand-mark">帮</span>
-          <span className="login-brand-name">帮帮回收</span>
+          <span className="login-brand-mark">来</span>
+          <span className="login-brand-name">来卖吧</span>
           <span className="login-brand-tag">管理后台</span>
         </div>
         <h1 className="login-title">管理员登录</h1>
@@ -316,7 +316,7 @@ function AdminLayout({ auth, logout, children }: { auth: AuthState; logout: () =
   return (
     <div className="admin-shell">
       <aside className="sidebar">
-        <div className="sidebar-brand"><span className="figma-brand-mark"><RefreshCw size={16} /></span><span><strong>帮帮回收</strong><small>管理后台 v1.0</small></span></div>
+        <div className="sidebar-brand"><span className="figma-brand-mark"><RefreshCw size={16} /></span><span><strong>来卖吧</strong><small>管理后台 v1.0</small></span></div>
         <nav aria-label="主导航">
           <NavLink to="/orders" className={({ isActive }) => `nav-item ${isActive ? "active" : ""}`}><Package size={16} />订单管理<ChevronRight className="nav-chevron" size={13} /></NavLink>
           <span className="nav-item is-disabled" title="人员管理后端接口尚未接入"><Users size={16} />人员管理<small>待接入</small></span>
@@ -569,15 +569,6 @@ function CategoryModal({ initial, token, close, onError, saved }: { initial: Cat
   const [saving, setSaving] = useState(false);
   const submit = async (event: FormEvent) => { event.preventDefault(); if (!form.name.trim()) return onError(new Error("请填写品类名称")); setSaving(true); try { await callCloud("adminSaveCategory", { sessionToken: token, category: { ...form, name: form.name.trim(), priceRef: form.priceRef?.trim() } }); saved(); } catch (error) { onError(error); } finally { setSaving(false); } };
   return <Modal title={initial ? "编辑品类" : "新增品类"} close={close}><form className="modal-form" onSubmit={submit}><label><span>品类名称 *</span><input autoFocus value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label><div className="form-grid"><label><span>计量单位 *</span><select value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value as "kg" | "件" })}><option value="kg">kg</option><option value="件">件</option></select></label><label><span>排序</span><input type="number" step="1" value={form.sortOrder} onChange={(e) => setForm({ ...form, sortOrder: Number(e.target.value) || 0 })} /></label></div><label><span>参考价</span><input placeholder="例如：0.8元/kg起" value={form.priceRef || ""} onChange={(e) => setForm({ ...form, priceRef: e.target.value })} /></label><label className="switch-row"><div><strong>品类上架</strong><small>关闭后小程序用户端不再展示</small></div><input type="checkbox" checked={form.enabled} onChange={(e) => setForm({ ...form, enabled: e.target.checked })} /></label><footer className="modal-footer"><button type="button" className="button secondary" onClick={close}>取消</button><button className="button primary" disabled={saving}>{saving ? "正在保存…" : "保存品类"}</button></footer></form></Modal>;
-}
-
-function SettingsPage({ token, onError, notify }: { token: string; onError: (e: unknown) => void; notify: (t: ToastState) => void }) {
-  const [form, setForm] = useState<RecycleSettings | null>(null);
-  const [saving, setSaving] = useState(false);
-  useEffect(() => { callCloud<RecycleSettings>("adminGetSettings", { sessionToken: token }).then(setForm).catch(onError); }, [token, onError]);
-  if (!form) return <section className="page-card"><FullscreenLoading compact text="正在加载系统配置…" /></section>;
-  const submit = async (event: FormEvent) => { event.preventDefault(); if (form.minWeightKg < 0 || form.minCount < 0 || !Number.isInteger(form.minCount)) return onError(new Error("请填写有效的起收标准")); setSaving(true); try { const data = await callCloud<RecycleSettings>("adminSaveSettings", { sessionToken: token, settings: form }); setForm(data); notify({ kind: "success", text: "系统配置已保存" }); } catch (error) { onError(error); } finally { setSaving(false); } };
-  return <section className="page-card settings-card"><div className="section-top"><div><h2>最低起收标准</h2><p>修改后将影响小程序新建订单的校验规则。</p></div>{form.updateTime ? <span className="updated-at">最后更新 {formatTime(form.updateTime)}</span> : null}</div><form onSubmit={submit}><div className="settings-grid"><label className="setting-item"><div><strong>最低起收重量</strong><p>按重量计量的订单需达到该标准。</p></div><div className="unit-input"><input type="number" min="0" step="0.1" value={form.minWeightKg} onChange={(e) => setForm({ ...form, minWeightKg: Number(e.target.value) })} /><span>kg</span></div></label><label className="setting-item"><div><strong>最低起收件数</strong><p>设为 0 表示不启用件数门槛。</p></div><div className="unit-input"><input type="number" min="0" step="1" value={form.minCount} onChange={(e) => setForm({ ...form, minCount: Number(e.target.value) })} /><span>件</span></div></label><label className="setting-item"><div><strong>拍照订单校验起收量</strong><p>开启后，拍照提交也需满足最低起收标准。</p></div><input type="checkbox" checked={form.photoOrderCheckMinQuantity} onChange={(e) => setForm({ ...form, photoOrderCheckMinQuantity: e.target.checked })} /></label></div><div className="info-callout"><strong>规则影响</strong><p>该配置只影响保存后新提交的订单，不会修改已创建的历史订单。</p></div><div className="settings-actions"><button className="button primary" disabled={saving}>{saving ? "正在保存…" : "保存配置"}</button></div></form></section>;
 }
 
 function StatusBadge({ status }: { status: OrderStatus }) { return <span className={`status-badge ${status}`}><i />{STATUS_TEXT[status] || status}</span>; }

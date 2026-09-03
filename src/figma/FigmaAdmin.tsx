@@ -1,7 +1,7 @@
 import { Fragment, useState, useRef, useEffect, useMemo, useCallback, type ReactNode } from "react";
 import {
   Package, Settings, Tags, LogOut, Eye, EyeOff, X, Search,
-  ChevronRight, RefreshCw, Plus, Phone, MapPin, User, ImageIcon,
+  ChevronRight, RefreshCw, Plus, Phone, MapPin, User, UserPlus, ImageIcon,
   XCircle, Loader, Edit2, Trash2, ToggleLeft, ToggleRight,
   Bell, Database, Save, Users, GripVertical, ChevronDown, Check,
   AlarmClock, Lock, SlidersHorizontal, Store, ChevronUp, Columns3,
@@ -111,12 +111,10 @@ const legacySettingsToSystemSettings = (settings: LegacyRecycleSettings): System
   { _id:"virtual:home_banner", key:"home_banner", label:"首页 Banner", type:"image", value:settings.bannerImageFileId||"", imageUrl:settings.bannerImageUrl||"", description:"小程序首页顶部背景图", updateTime:settings.updateTime },
   { _id:"virtual:service_phone", key:"service_phone", label:"客服电话", type:"text", value:"400-800-1234", description:"首页展示及拨打的客服电话" },
   { _id:"virtual:map_key", key:"map_key", label:"腾讯地图 Key", type:"text", value:"", description:"腾讯位置服务 WebService Key" },
-  { _id:"virtual:recycle_min_weight_kg", key:"recycle_min_weight_kg", label:"最低起收重量", type:"number", value:String(settings.minWeightKg??5), description:"单位：斤", updateTime:settings.updateTime },
-  { _id:"virtual:recycle_min_count", key:"recycle_min_count", label:"最低起收件数", type:"number", value:String(settings.minCount??0), description:"设置为 0 表示不限制件数", updateTime:settings.updateTime },
   { _id:"virtual:photo_order_check_min_quantity", key:"photo_order_check_min_quantity", label:"拍照订单校验起收量", type:"boolean", value:String(settings.photoOrderCheckMinQuantity===true), description:"true 开启，false 关闭", updateTime:settings.updateTime },
   { _id:"virtual:user_agreement", key:"user_agreement", label:"用户协议", type:"longtext" as const, value:"", description:"小程序登录页展示，用户点击《用户协议》弹窗内容" },
   { _id:"virtual:privacy_policy", key:"privacy_policy", label:"隐私政策", type:"longtext" as const, value:"", description:"小程序登录页展示，用户点击《隐私政策》弹窗内容" },
-  { _id:"virtual:terms_of_service", key:"terms_of_service", label:"服务条款", type:"longtext" as const, value:"", description:"小程序下单页展示，用户点击《帮帮回收上门服务条款》弹窗内容" },
+  { _id:"virtual:terms_of_service", key:"terms_of_service", label:"服务条款", type:"longtext" as const, value:"", description:"小程序下单页展示，用户点击《来卖吧上门服务条款》弹窗内容" },
 ];
 
 const resolveBusinessOrderType = (order: Pick<CloudOrder,"source"|"orderType"|"demolition">): BusinessOrderType => {
@@ -192,8 +190,8 @@ const priceFromReference = (value?: string) => {
 const stripTrailingQi = (s?: string) => String(s || "").replace(/起$/, "");
 
 const categoryToItem = (item: CloudCategory): RecycleItem => {
-  const priceRef = stripTrailingQi(item.priceRef);
-  const price = priceFromReference(priceRef);
+  // 单价以数字字段 price 为准；存量数据没有 price 时，退回从 priceRef 文案里抠数字。
+  const price = typeof item.price === "number" ? item.price.toFixed(2) : priceFromReference(item.priceRef);
   return {
     id: item._id || item.name,
     categoryId: item._id,
@@ -202,7 +200,7 @@ const categoryToItem = (item: CloudCategory): RecycleItem => {
     unit: item.unit,
     price,
     stationPrice: "—",
-    priceRef,
+    priceRef: stripTrailingQi(item.priceRef),
     sortOrder: item.sortOrder,
     fieldEstimate: price === "—",
     enabled: item.enabled,
@@ -1374,7 +1372,7 @@ function CategoryEditorModal({ groups,initial,preferredGroupId,onSave,onClose }:
   const initialParentId=groups.find((group)=>group.items.some((item)=>item.id===initial?.id))?.id||preferredGroupId||selectableGroups[0]?.id||"";
   const [form,setForm]=useState({
     name:initial?.name||"",
-    unit:initial?.unit||"kg",
+    unit:initial?.unit||"公斤",
     price:initial?.price==="—"?"":initial?.price||"",
     stationPrice:initial?.stationPrice==="—"?"":initial?.stationPrice||"",
     parentId:initialParentId,
@@ -1400,7 +1398,6 @@ function CategoryEditorModal({ groups,initial,preferredGroupId,onSave,onClose }:
       id:initial?.id||`${form.parentId}-${Date.now()}`,name:form.name.trim(),unit:form.unit,
       parentId:form.parentId,
       price:form.fieldEstimate?"—":form.price, stationPrice:form.fieldEstimate?"—":form.stationPrice||"—",
-      priceRef:form.fieldEstimate?"现场估价":`${form.price}元/${form.unit}起`,
       fieldEstimate:form.fieldEstimate, enabled:form.enabled,
     };
     setSaving(true);
@@ -1411,19 +1408,19 @@ function CategoryEditorModal({ groups,initial,preferredGroupId,onSave,onClose }:
       setSaving(false);
     }
   }
-  const inp="w-full px-3 py-2 rounded-lg border text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50 transition-all";
+  const inp="w-full px-3 py-2.5 min-h-[44px] rounded-lg border text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50 transition-all";
   return(
-    <div className="fixed inset-0 z-50 flex items-center justify-center" onClick={onClose}>
+    <div className="fixed inset-0 z-50 flex items-end md:items-center justify-center" onClick={onClose}>
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm"/>
-      <div className="relative z-10 w-full max-w-md mx-4 bg-white rounded-2xl shadow-2xl" onClick={e=>e.stopPropagation()}>
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+      <div className="relative z-10 w-full md:max-w-md md:mx-4 bg-white rounded-t-2xl md:rounded-2xl shadow-2xl max-h-[92vh] flex flex-col" onClick={e=>e.stopPropagation()}>
+        <div className="flex items-center justify-between px-4 md:px-6 py-4 border-b border-gray-100 flex-shrink-0">
           <div>
             <h2 className="font-semibold text-gray-900">{initial?"编辑二级品类":"添加二级品类"}</h2>
-            <p className="text-xs text-gray-400 mt-0.5">价格和计量单位设置在二级品类上</p>
+            <p className="text-xs text-gray-400 mt-0.5 hidden md:block">价格和计量单位设置在二级品类上</p>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={20}/></button>
+          <button onClick={onClose} className="p-1 text-gray-400 hover:text-gray-600"><X size={20}/></button>
         </div>
-        <div className="px-6 py-5 space-y-4">
+        <div className="px-4 md:px-6 py-4 md:py-5 space-y-3.5 overflow-y-auto flex-1">
           <div>
             <label className="block text-xs font-medium text-gray-500 mb-1.5">所属一级分类 <span className="text-red-400">*</span></label>
             <select value={form.parentId} onChange={e=>set("parentId",e.target.value)} className={`${inp} bg-white ${err.parentId?"border-red-300":"border-gray-200"}`}>
@@ -1432,15 +1429,13 @@ function CategoryEditorModal({ groups,initial,preferredGroupId,onSave,onClose }:
             </select>
             {err.parentId&&<p className="text-xs text-red-500 mt-1">{err.parentId}</p>}
           </div>
-          <div className="grid grid-cols-2 gap-4">
-            <div><label className="block text-xs font-medium text-gray-500 mb-1.5">二级品类名称 <span className="text-red-400">*</span></label>
-              <input value={form.name} onChange={e=>set("name",e.target.value)} placeholder="如：铁、不锈钢、铜" className={`${inp} ${err.name?"border-red-300":"border-gray-200"}`}/>
-              {err.name&&<p className="text-xs text-red-500 mt-1">{err.name}</p>}
-            </div>
-            <div><label className="block text-xs font-medium text-gray-500 mb-1.5">计量单位</label>
-              <select value={form.unit} onChange={e=>set("unit",e.target.value)} className={`${inp} bg-white border-gray-200`}>
-                {["kg","斤","台","件","双","袋","箱"].map(u=><option key={u}>{u}</option>)}
-              </select>
+          <div><label className="block text-xs font-medium text-gray-500 mb-1.5">二级品类名称 <span className="text-red-400">*</span></label>
+            <input value={form.name} onChange={e=>set("name",e.target.value)} placeholder="如：铁、不锈钢、铜" className={`${inp} ${err.name?"border-red-300":"border-gray-200"}`}/>
+            {err.name&&<p className="text-xs text-red-500 mt-1">{err.name}</p>}
+          </div>
+          <div><label className="block text-xs font-medium text-gray-500 mb-1.5">计量单位</label>
+            <div className="flex flex-wrap gap-1.5">
+              {["公斤","斤","台","件","双","袋","箱"].map(u=><button key={u} type="button" onClick={()=>set("unit",u)} className={`px-3 py-2 min-h-[40px] min-w-[48px] rounded-lg text-sm font-medium border transition-all ${form.unit===u?"bg-green-50 border-green-400 text-green-700":"bg-white border-gray-200 text-gray-600"}`}>{u}</button>)}
             </div>
           </div>
           {selGroup?.allowFieldEstimate&&(
@@ -1450,13 +1445,13 @@ function CategoryEditorModal({ groups,initial,preferredGroupId,onSave,onClose }:
             </div>
           )}
           {!form.fieldEstimate&&(
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-2 gap-3">
               <div><label className="block text-xs font-medium text-gray-500 mb-1.5">收购单价（元） <span className="text-red-400">*</span></label>
-                <input value={form.price} onChange={e=>set("price",e.target.value)} placeholder="0.00" className={`${inp} font-mono ${err.price?"border-red-300":"border-gray-200"}`}/>
+                <input value={form.price} onChange={e=>set("price",e.target.value)} type="number" inputMode="decimal" step="0.01" placeholder="0.00" className={`${inp} font-mono ${err.price?"border-red-300":"border-gray-200"}`}/>
                 {err.price&&<p className="text-xs text-red-500 mt-1">{err.price}</p>}
               </div>
               <div><label className="block text-xs font-medium text-gray-500 mb-1.5">打包站价格（元）</label>
-                <input value={form.stationPrice} onChange={e=>set("stationPrice",e.target.value)} placeholder="0.00" className={`${inp} font-mono border-gray-200`}/>
+                <input value={form.stationPrice} onChange={e=>set("stationPrice",e.target.value)} type="number" inputMode="decimal" step="0.01" placeholder="0.00" className={`${inp} font-mono border-gray-200`}/>
               </div>
             </div>
           )}
@@ -1465,9 +1460,9 @@ function CategoryEditorModal({ groups,initial,preferredGroupId,onSave,onClose }:
             <button type="button" onClick={()=>set("enabled",!form.enabled)}>{form.enabled?<ToggleRight size={26} className="text-green-500"/>:<ToggleLeft size={26} className="text-gray-300"/>}</button>
           </div>
         </div>
-        <div className="px-6 py-4 border-t border-gray-100 flex justify-end gap-3">
-          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-gray-200 text-sm text-gray-600 hover:bg-gray-50">取消</button>
-          <button disabled={saving} onClick={()=>void handleSave()} className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium text-white hover:opacity-90 disabled:opacity-50" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}>{initial?<Save size={14}/>:<Plus size={14}/>} {saving?"保存中…":initial?"保存修改":"添加二级品类"}</button>
+        <div className="px-4 md:px-6 py-3 md:py-4 border-t border-gray-100 flex gap-2 md:justify-end flex-shrink-0">
+          <button onClick={onClose} className="flex-1 md:flex-none px-4 py-2.5 min-h-[44px] rounded-lg border border-gray-200 text-sm text-gray-600 hover:bg-gray-50">取消</button>
+          <button disabled={saving} onClick={()=>void handleSave()} className="flex-[2] md:flex-none flex items-center justify-center gap-1.5 px-4 py-2.5 min-h-[44px] rounded-lg text-sm font-medium text-white hover:opacity-90 disabled:opacity-50" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}>{initial?<Save size={14}/>:<Plus size={14}/>} {saving?"保存中…":initial?"保存修改":"添加"}</button>
         </div>
       </div>
     </div>
@@ -1663,12 +1658,10 @@ function RecycleCatsPage({ groups,onSaveCategory,onSaveGroup,onDeleteCategory,on
   }).filter(Boolean) as RecycleGroup[];
 
   return(
-    <div className="p-6 space-y-5">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <div><div className="flex items-center gap-2"><h1 className="text-xl font-semibold text-gray-900">品类管理</h1><span className="text-xs px-2 py-1 rounded-full bg-green-50 text-green-700 border border-green-100">根节点：回收品类</span></div><p className="text-sm text-gray-400 mt-0.5">一级分类展示在首页，二级品类维护真实回收单价</p></div>
-        <div className="flex items-center gap-2">
-          <button onClick={()=>setShowAddCategory(true)} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white hover:opacity-90 transition-all" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}><Plus size={14}/>添加品类</button>
-        </div>
+    <div className="p-4 md:p-6 space-y-3 md:space-y-5">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0"><h1 className="text-lg md:text-xl font-semibold text-gray-900">品类管理</h1><p className="text-xs md:text-sm text-gray-400 mt-0.5 hidden md:block">一级分类展示在首页，二级品类维护真实回收单价</p></div>
+        <button onClick={()=>setShowAddCategory(true)} className="flex items-center gap-1.5 px-3 md:px-4 py-2 min-h-[40px] rounded-lg text-sm font-medium text-white hover:opacity-90 transition-all flex-shrink-0" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}><Plus size={14}/>添加品类</button>
       </div>
 
       {/* Search */}
@@ -1684,25 +1677,23 @@ function RecycleCatsPage({ groups,onSaveCategory,onSaveGroup,onDeleteCategory,on
         {filteredGroups.map(group=>(
           <div key={group.id} className={`bg-white rounded-xl border overflow-hidden ${group.enabled?"border-gray-100":"border-gray-100 opacity-60"}`}>
             {/* Group header */}
-            <div className="flex items-center gap-3 px-5 py-3.5 bg-gray-50 border-b border-gray-100">
-              <button onClick={()=>toggleExpand(group.id)} className="text-gray-400 hover:text-gray-600 transition-colors">
-                {expanded.has(group.id)?<ChevronUp size={16}/>:<ChevronDown size={16}/>}
+            <div className="flex items-center gap-2 md:gap-3 px-3 md:px-5 py-3 md:py-3.5 bg-gray-50 border-b border-gray-100">
+              <button onClick={()=>toggleExpand(group.id)} className="flex-1 min-w-0 flex items-center gap-2 md:gap-3 text-left">
+                <span className="text-gray-400 flex-shrink-0">{expanded.has(group.id)?<ChevronUp size={16}/>:<ChevronDown size={16}/>}</span>
+                <span className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0 hidden md:flex" style={{background:"linear-gradient(135deg,#e8f5ed,#d4edda)"}}>
+                  <Package size={15} className="text-green-700"/>
+                </span>
+                <span className="flex-1 min-w-0">
+                  <span className="flex items-center gap-1.5 flex-wrap">
+                    <span className="font-semibold text-gray-900 text-sm">{group.name}</span>
+                    {group.id==="cloud-categories"&&<span className="text-[10px] font-semibold bg-green-50 text-green-700 border border-green-100 px-1.5 py-0.5 rounded-full">待归类</span>}
+                    {group.allowFieldEstimate&&<span className="text-[10px] font-semibold bg-amber-100 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded-full">现场估价</span>}
+                  </span>
+                  <span className="block text-xs text-gray-400 mt-0.5 truncate">{group.items.filter(i=>i.enabled).length}/{group.items.length} 个启用<span className="hidden md:inline">{group.desc?` · ${group.desc}`:""}</span></span>
+                </span>
               </button>
-              <div className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0" style={{background:"linear-gradient(135deg,#e8f5ed,#d4edda)"}}>
-                <Package size={15} className="text-green-700"/>
-              </div>
-              <div className="flex-1">
-                <div className="flex items-center gap-2">
-                  <p className="font-semibold text-gray-900 text-sm">{group.name}</p>
-                  <span className="text-[10px] font-semibold bg-green-50 text-green-700 border border-green-100 px-1.5 py-0.5 rounded-full">{group.id==="cloud-categories"?"待归类":"一级分类"}</span>
-                  {group.allowFieldEstimate&&<span className="text-[10px] font-semibold bg-amber-100 text-amber-700 border border-amber-200 px-1.5 py-0.5 rounded-full">现场估价</span>}
-                </div>
-                <p className="text-xs text-gray-400">{group.desc} · {group.items.filter(i=>i.enabled).length}/{group.items.length} 个二级品类启用</p>
-              </div>
-              {group.id!=="cloud-categories"&&<>
-                <button onClick={()=>setEditingGroup(group)} className="p-1.5 text-gray-400 hover:text-blue-600" title="编辑一级分类"><Edit2 size={15}/></button>
-              </>}
-              {group.id!=="cloud-categories"&&<button onClick={()=>toggleGroup(group)} title={group.enabled?"停用一级分类":"启用一级分类"}>{group.enabled?<ToggleRight size={22} className="text-green-500"/>:<ToggleLeft size={22} className="text-gray-300"/>}</button>}
+              {group.id!=="cloud-categories"&&<button onClick={()=>setEditingGroup(group)} className="p-2 text-gray-400 hover:text-blue-600 flex-shrink-0" title="编辑一级分类"><Edit2 size={15}/></button>}
+              {group.id!=="cloud-categories"&&<button onClick={()=>toggleGroup(group)} className="p-1 flex-shrink-0" title={group.enabled?"停用一级分类":"启用一级分类"}>{group.enabled?<ToggleRight size={22} className="text-green-500"/>:<ToggleLeft size={22} className="text-gray-300"/>}</button>}
             </div>
 
             {/* Items — desktop table */}
@@ -1715,22 +1706,22 @@ function RecycleCatsPage({ groups,onSaveCategory,onSaveGroup,onDeleteCategory,on
                 {group.items.map((item)=>{
                   const sp=spread(item.price,item.stationPrice);
                   return(
-                    <button key={item.id} onClick={()=>setEditingItem(item)} className={`w-full px-4 py-3 text-left active:bg-gray-50 transition-colors ${!item.enabled?"opacity-50":""}`}>
-                      <div className="flex items-center justify-between mb-1.5">
-                        <div className="flex items-center gap-2">
-                          <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${item.enabled?"bg-green-400":"bg-gray-300"}`}/>
+                    <div key={item.id} className={`flex items-center gap-2 px-3 ${!item.enabled?"opacity-50":""}`}>
+                      <button onClick={()=>setEditingItem(item)} className="flex-1 min-w-0 py-3 text-left active:bg-gray-50 transition-colors">
+                        <div className="flex items-center gap-1.5 flex-wrap">
                           <span className="text-sm font-medium text-gray-800">{item.name}</span>
                           {item.fieldEstimate&&<span className="text-[10px] font-medium bg-amber-50 text-amber-600 border border-amber-200 px-1.5 py-0.5 rounded-full">估价</span>}
                         </div>
-                        <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium ${item.enabled?"bg-green-100 text-green-700":"bg-red-100 text-red-600"}`}>{item.enabled?"上架":"下架"}</span>
-                      </div>
-                      <div className="flex items-center gap-3 text-xs text-gray-500 pl-3.5">
-                        <span className="font-mono">{item.unit}</span>
-                        <span className="text-gray-300">·</span>
-                        {item.fieldEstimate?<span className="text-amber-600 italic">面议</span>:<span className="font-bold text-gray-800 font-mono">¥{item.price}</span>}
-                        {sp!==null&&<><span className="text-gray-300">·</span><span className={`font-bold font-mono ${parseFloat(sp)>0?"text-green-600":"text-red-500"}`}>{parseFloat(sp)>0?"+":""}{sp}</span></>}
-                      </div>
-                    </button>
+                        <div className="flex items-center gap-2 text-xs text-gray-500 mt-1">
+                          {item.fieldEstimate
+                            ?<span className="text-amber-600">面议</span>
+                            :<span className="font-bold text-gray-800 font-mono text-sm">¥{item.price}<span className="text-gray-400 font-normal">/{item.unit}</span></span>}
+                          {sp!==null&&<><span className="text-gray-300">·</span><span className="text-gray-400">差价</span><span className={`font-bold font-mono ${parseFloat(sp)>0?"text-green-600":"text-red-500"}`}>{parseFloat(sp)>0?"+":""}{sp}</span></>}
+                        </div>
+                      </button>
+                      <button onClick={()=>toggleItem(group.id,item.id)} className="p-1 flex-shrink-0" title={item.enabled?"下架":"上架"}>{item.enabled?<ToggleRight size={22} className="text-green-500"/>:<ToggleLeft size={22} className="text-gray-300"/>}</button>
+                      <ChevronRight size={15} className="text-gray-300 flex-shrink-0"/>
+                    </div>
                   );
                 })}
               </div>
@@ -1833,7 +1824,7 @@ function CategoryNodeModal({nodes,initial,onSave,onClose,onDelete}:{nodes:Catego
   const [form,setForm]=useState({
     name:initial?.name||"",
     parentId:initial?.parentId||"",
-    unit:initial?.unit||"kg",
+    unit:initial?.unit||"公斤",
     price:initial?.price==="—"?"":initial?.price||"",
     sortOrder:initial?.sortOrder||0,
     fieldEstimate:initial?.fieldEstimate||false,
@@ -1859,7 +1850,6 @@ function CategoryNodeModal({nodes,initial,onSave,onClose,onDelete}:{nodes:Catego
         unit:form.unit,
         price:form.fieldEstimate?"—":form.price||"—",
         stationPrice:initial?.stationPrice||"—",
-        priceRef:form.fieldEstimate?"现场估价":form.price?`${form.price}元/${form.unit}起`:"",
         sortOrder:form.sortOrder,
         fieldEstimate:form.fieldEstimate,
         enabled:form.enabled,
@@ -1902,8 +1892,8 @@ function CategoryNodeModal({nodes,initial,onSave,onClose,onDelete}:{nodes:Catego
           <label><span className="block text-xs font-medium text-gray-500 mb-1.5">显示顺序</span><input type="number" value={form.sortOrder} onChange={(event)=>setForm({...form,sortOrder:Number(event.target.value)||0})} className={inputClass}/></label>
         </div>
         <div className="grid grid-cols-2 gap-4">
-          <label><span className="block text-xs font-medium text-gray-500 mb-1.5">计量单位</span><select value={form.unit} onChange={(event)=>setForm({...form,unit:event.target.value})} className={`${inputClass} bg-white`}>{["kg","斤","台","件","双","袋","箱"].map((unit)=><option key={unit}>{unit}</option>)}</select></label>
-          <label><span className="block text-xs font-medium text-gray-500 mb-1.5">参考价格（元）</span><input disabled={form.fieldEstimate} value={form.price} onChange={(event)=>setForm({...form,price:event.target.value})} placeholder={form.fieldEstimate?"现场估价":"可留空"} className={`${inputClass} disabled:bg-gray-100`}/></label><label><span className="block text-xs font-medium text-gray-500 mb-1.5">最低上门重量（斤）<span className="text-gray-300 font-normal"> · 留空沿用全局</span></span><input type="number" min={0} step={0.1} value={form.minVisitKg} onChange={(event)=>setForm({...form,minVisitKg:event.target.value})} placeholder="例如：10（不填则沿用全局设置）" className={`${inputClass} font-mono`}/></label>
+          <label><span className="block text-xs font-medium text-gray-500 mb-1.5">计量单位</span><select value={form.unit} onChange={(event)=>setForm({...form,unit:event.target.value})} className={`${inputClass} bg-white`}>{["公斤","斤","台","件","双","袋","箱"].map((unit)=><option key={unit}>{unit}</option>)}</select></label>
+          <label><span className="block text-xs font-medium text-gray-500 mb-1.5">参考价格（元）</span><input disabled={form.fieldEstimate} value={form.price} onChange={(event)=>setForm({...form,price:event.target.value})} placeholder={form.fieldEstimate?"现场估价":"可留空"} className={`${inputClass} disabled:bg-gray-100`}/></label><label><span className="block text-xs font-medium text-gray-500 mb-1.5">最低上门门槛（{form.unit}）<span className="text-gray-300 font-normal"> · 留空不限制</span></span><input type="number" min={0} step={0.1} value={form.minVisitKg} onChange={(event)=>setForm({...form,minVisitKg:event.target.value})} placeholder={`例如：10（单位：${form.unit}）`} className={`${inputClass} font-mono`}/></label>
         </div>
         <div className="flex items-center justify-between px-3 py-2 bg-amber-50 rounded-xl"><div><p className="text-sm font-medium text-amber-800">现场估价</p><p className="text-xs text-amber-600">该节点不设置固定参考价格</p></div><button onClick={()=>setForm({...form,fieldEstimate:!form.fieldEstimate})}>{form.fieldEstimate?<ToggleRight size={26} className="text-amber-500"/>:<ToggleLeft size={26} className="text-gray-300"/>}</button></div>
         {!form.parentId&&<div className="flex items-center justify-between px-3 py-2 bg-green-50 rounded-xl"><div><p className="text-sm font-medium text-green-800">首页展示</p><p className="text-xs text-green-600">首页最多展示排序靠前的 4 个一级类别</p></div><button onClick={()=>setForm({...form,showOnHome:!form.showOnHome})}>{form.showOnHome?<ToggleRight size={26} className="text-green-500"/>:<ToggleLeft size={26} className="text-gray-300"/>}</button></div>}
@@ -1940,8 +1930,19 @@ function CategoryTreePage({nodes,onSave,onDelete}:{nodes:CategoryNode[];onSave:(
   useEffect(()=>setExpanded((current)=>new Set([...current,...flattenCategoryTree(nodes).map((item)=>item.id)])),[nodes]);
   const visible=filterCategoryTree(nodes,search);
   const toggle=(id:string)=>setExpanded((current)=>{const next=new Set(current);next.has(id)?next.delete(id):next.add(id);return next;});
-  const renderRows=(items:CategoryNode[],depth=0):ReactNode=>items.map((item)=><Fragment key={item.id}><tr tabIndex={0} onClick={()=>setEditing(item)} onKeyDown={(event)=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();setEditing(item);}}} className={`border-b border-gray-50 hover:bg-green-50/40 cursor-pointer ${!item.enabled?"opacity-50":""}`}><td className="px-4 py-3"><div className="flex items-center gap-2" style={{paddingLeft:depth*28}}>{item.children.length>0?<button onClick={(event)=>{event.stopPropagation();toggle(item.id);}} className="w-6 h-6 rounded flex items-center justify-center text-gray-400 hover:bg-gray-100">{expanded.has(item.id)?<ChevronDown size={15}/>:<ChevronRight size={15}/>}</button>:<span className="w-6 flex justify-center"><span className="w-1.5 h-1.5 rounded-full bg-gray-300"/></span>}<div className={`w-7 h-7 rounded-lg flex items-center justify-center ${depth===0?"bg-green-100 text-green-700":"bg-gray-100 text-gray-500"}`}>{depth===0?<Package size={14}/>:<Tags size={13}/>}</div><div><p className="text-sm font-medium text-gray-800">{item.name}</p><p className="text-[10px] text-gray-400">{depth===0?"根节点":`第 ${depth+1} 层节点`} · {item.children.length} 个直接子节点</p></div></div></td><td className="px-4 py-3 text-xs text-gray-500 font-mono">{item.unit||"—"}</td><td className="px-4 py-3 text-sm font-mono">{item.fieldEstimate?<span className="text-amber-600">现场估价</span>:item.price&&item.price!=="—"?`¥${item.price}`:"—"}</td><td className="px-4 py-3 text-xs text-gray-500 font-mono">{typeof item.minVisitKg==="number"?`≥ ${item.minVisitKg} kg`:<span className="text-gray-300">— 全局</span>}</td><td className="px-4 py-3 text-xs text-gray-500">{item.sortOrder??0}</td><td className="px-4 py-3" onClick={(event)=>event.stopPropagation()}><button onClick={()=>void onSave({...item,enabled:!item.enabled})}>{item.enabled?<span className="px-2 py-0.5 rounded-full text-xs bg-green-100 text-green-700 border border-green-200">已启用</span>:<span className="px-2 py-0.5 rounded-full text-xs bg-red-50 text-red-600 border border-red-200">已停用</span>}</button></td></tr>{item.children.length>0&&expanded.has(item.id)&&renderRows(item.children,depth+1)}</Fragment>);
-  return <div className="p-6 space-y-5"><div className="flex items-center justify-between"><div><h1 className="text-xl font-semibold text-gray-900">品类管理</h1><p className="text-sm text-gray-400 mt-0.5">统一父子节点模型，支持任意层级嵌套</p></div><button onClick={()=>setAdding(true)} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white bg-green-600 hover:bg-green-700"><Plus size={14}/>添加品类</button></div><div className="relative"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/><input value={search} onChange={(event)=>setSearch(event.target.value)} placeholder="搜索品类节点…" className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm bg-white outline-none focus:border-green-400"/></div><div className="bg-white rounded-xl border border-gray-100 overflow-hidden"><table className="w-full"><thead><tr className="bg-gray-50 border-b border-gray-100">{["品类树","单位","参考价格","上门门槛","排序","状态"].map((title)=><th key={title} className="text-left px-4 py-3 text-xs font-semibold text-gray-500">{title}</th>)}</tr></thead><tbody>{renderRows(visible)}{visible.length===0&&<tr><td colSpan={6} className="px-6 py-16 text-center text-sm text-gray-400">暂无品类节点</td></tr>}</tbody></table></div>{adding&&<CategoryNodeModal key="new" nodes={nodes} onSave={onSave} onClose={()=>setAdding(false)}/>} {editing&&<CategoryNodeModal key={editing.id} nodes={nodes} initial={editing} onSave={onSave} onClose={()=>setEditing(undefined)} onDelete={async(item)=>{await onDelete(item);setEditing(undefined);}}/>}</div>;
+  // 单位/参考价/上门门槛不再单独占列，折进品类名下方的一行摘要，避免表格横向滚动。
+  const metaOf=(item:CategoryNode)=>{
+    const parts:string[]=[];
+    if(item.fieldEstimate) parts.push("现场估价");
+    else if(item.price&&item.price!=="—") parts.push(`¥${item.price}${item.unit?`/${item.unit}`:""}`);
+    else if(item.unit) parts.push(item.unit);
+    if(typeof item.minVisitKg==="number") parts.push(`≥ ${item.minVisitKg}${item.unit||""}`);
+    if(item.children.length>0) parts.push(`${item.children.length} 个子节点`);
+    return parts.join(" · ");
+  };
+  // 移动端优先：用 flex 行代替 table，缩进随层级递减，保证三列在窄屏同屏显示且不横向滚动。
+  const renderRows=(items:CategoryNode[],depth=0):ReactNode=>items.map((item)=><Fragment key={item.id}><div role="button" tabIndex={0} onClick={()=>setEditing(item)} onKeyDown={(event)=>{if(event.key==="Enter"||event.key===" "){event.preventDefault();setEditing(item);}}} className={`flex items-center gap-2 px-3 py-2.5 border-b border-gray-50 hover:bg-green-50/40 cursor-pointer ${!item.enabled?"opacity-50":""}`}><div className="flex items-center gap-1.5 min-w-0 flex-1" style={{paddingLeft:Math.min(depth,4)*14}}>{item.children.length>0?<button onClick={(event)=>{event.stopPropagation();toggle(item.id);}} className="w-5 h-5 shrink-0 rounded flex items-center justify-center text-gray-400 hover:bg-gray-100">{expanded.has(item.id)?<ChevronDown size={14}/>:<ChevronRight size={14}/>}</button>:<span className="w-5 shrink-0 flex justify-center"><span className="w-1.5 h-1.5 rounded-full bg-gray-300"/></span>}<div className={`w-6 h-6 shrink-0 rounded-lg flex items-center justify-center ${depth===0?"bg-green-100 text-green-700":"bg-gray-100 text-gray-500"}`}>{depth===0?<Package size={13}/>:<Tags size={12}/>}</div><div className="min-w-0 flex-1"><p className="text-sm font-medium text-gray-800 truncate">{item.name}</p><p className="text-[10px] text-gray-400 truncate">{metaOf(item)||"—"}</p></div></div><span className="w-9 shrink-0 text-xs text-gray-500 text-right tabular-nums">{item.sortOrder??0}</span><button className="w-16 shrink-0 flex items-center justify-end leading-none" onClick={(event)=>{event.stopPropagation();void onSave({...item,enabled:!item.enabled});}}>{item.enabled?<span className="shrink-0 whitespace-nowrap px-2 py-1 rounded-full text-[10px] leading-none bg-green-100 text-green-700 border border-green-200">已启用</span>:<span className="shrink-0 whitespace-nowrap px-2 py-1 rounded-full text-[10px] leading-none bg-red-50 text-red-600 border border-red-200">已停用</span>}</button></div>{item.children.length>0&&expanded.has(item.id)&&renderRows(item.children,depth+1)}</Fragment>);
+  return <div className="p-6 space-y-5"><div className="flex items-center justify-between"><div><h1 className="text-xl font-semibold text-gray-900">品类管理</h1><p className="text-sm text-gray-400 mt-0.5">统一父子节点模型，支持任意层级嵌套</p></div><button onClick={()=>setAdding(true)} className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium text-white bg-green-600 hover:bg-green-700"><Plus size={14}/>添加品类</button></div><div className="relative"><Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/><input value={search} onChange={(event)=>setSearch(event.target.value)} placeholder="搜索品类节点…" className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm bg-white outline-none focus:border-green-400"/></div><div className="bg-white rounded-xl border border-gray-100 overflow-hidden"><div className="flex items-center gap-2 px-3 py-2.5 bg-gray-50 border-b border-gray-100"><span className="flex-1 min-w-0 text-xs font-semibold text-gray-500">品类树</span><span className="w-9 shrink-0 text-xs font-semibold text-gray-500 text-right">排序</span><span className="w-16 shrink-0 text-xs font-semibold text-gray-500 text-right">状态</span></div>{renderRows(visible)}{visible.length===0&&<div className="px-6 py-16 text-center text-sm text-gray-400">暂无品类节点</div>}</div>{adding&&<CategoryNodeModal key="new" nodes={nodes} onSave={onSave} onClose={()=>setAdding(false)}/>} {editing&&<CategoryNodeModal key={editing.id} nodes={nodes} initial={editing} onSave={onSave} onClose={()=>setEditing(undefined)} onDelete={async(item)=>{await onDelete(item);setEditing(undefined);}}/>}</div>;
 }
 
 // ─── System Page ──────────────────────────────────────────────────────────────
@@ -2325,7 +2326,7 @@ function LoginPage({ onLogin }:{ onLogin:()=>void }) {
       <div className="relative z-10 w-full max-w-[400px] mx-4">
         <div className="text-center mb-8">
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl mb-4" style={{background:"rgba(46,204,113,0.2)",border:"1px solid rgba(46,204,113,0.3)"}}><RefreshCw size={30} className="text-green-400"/></div>
-          <h1 className="text-2xl font-bold text-white tracking-wide">帮帮回收</h1>
+          <h1 className="text-2xl font-bold text-white tracking-wide">来卖吧</h1>
           <p className="text-green-300 text-sm mt-1 opacity-80">后台管理系统</p>
         </div>
         <div className="bg-white rounded-2xl p-8 shadow-2xl">
@@ -2677,11 +2678,16 @@ function AnalyticsPage({ orders }:{ orders:Order[] }) {
 }
 
 // ─── Main Layout ──────────────────────────────────────────────────────────────
-function AdminOrderDetailPage({id,token,onSaveOrder,onBack,onError}:{id:string;token:string;onSaveOrder:(order:Order)=>Promise<void>;onBack:()=>void;onError:(error:unknown)=>void}){
+function AdminOrderDetailPage({id,token,staff,onSaveOrder,onAssignRecycler,onDeleteOrder,onBack,onError}:{id:string;token:string;staff:Staff[];onSaveOrder:(order:Order)=>Promise<void>;onAssignRecycler:(order:Order,person:Staff)=>Promise<void>;onDeleteOrder:(docId:string)=>Promise<void>;onBack:()=>void;onError:(error:unknown)=>void}){
   const [editing,setEditing]=useState(false);
+  const [showDeleteConfirm,setShowDeleteConfirm]=useState(false);
+  const [deleting,setDeleting]=useState(false);
   const [order,setOrder]=useState<CloudOrder|null>(null);
   const [loading,setLoading]=useState(true);
   const [finalPriceText,setFinalPriceText]=useState("");
+  const [finalWeightText,setFinalWeightText]=useState("");
+  const [finalCountText,setFinalCountText]=useState("");
+  const [assigning,setAssigning]=useState(false);
   const [adminRemarkText,setAdminRemarkText]=useState("");
   const [savingResult,setSavingResult]=useState(false);
   const [proofs,setProofs]=useState<string[]>([]);
@@ -2689,6 +2695,7 @@ function AdminOrderDetailPage({id,token,onSaveOrder,onBack,onError}:{id:string;t
   const [uploadingProof,setUploadingProof]=useState(false);
   const [proofError,setProofError]=useState("");
   const proofInputRef=useRef<HTMLInputElement>(null);
+  const [showAssignModal,setShowAssignModal]=useState(false);
   const reload=useCallback(async()=>{
     setLoading(true);
     try{
@@ -2701,6 +2708,8 @@ function AdminOrderDetailPage({id,token,onSaveOrder,onBack,onError}:{id:string;t
   useEffect(()=>{
     if(!order)return;
     setFinalPriceText(order.finalPrice==null?"":String(order.finalPrice));
+    setFinalWeightText(order.finalWeight==null?"":String(order.finalWeight));
+    setFinalCountText(order.finalCount==null?"":String(order.finalCount));
     setAdminRemarkText(order.adminRemark||"");
     setProofs(order.transferProofs||[]);
     setProofPreviews(order.transferProofUrls||[]);
@@ -2710,7 +2719,7 @@ function AdminOrderDetailPage({id,token,onSaveOrder,onBack,onError}:{id:string;t
     if(!order||!fileList||fileList.length===0)return;
     const files=Array.from(fileList);
     setProofError("");
-    if(proofs.length+files.length>9){setProofError("最多上传 9 张凭证");return;}
+    if(proofs.length+files.length>6){setProofError("最多上传 6 张凭证");return;}
     const invalid=files.find((file)=>!["image/jpeg","image/png","image/webp"].includes(file.type)||file.size>10*1024*1024);
     if(invalid){setProofError("仅支持 JPG / PNG / WebP，单张不超过 10MB");return;}
     setUploadingProof(true);
@@ -2728,34 +2737,138 @@ function AdminOrderDetailPage({id,token,onSaveOrder,onBack,onError}:{id:string;t
     setProofs(proofs.filter((_,i)=>i!==index));
     setProofPreviews(proofPreviews.filter((_,i)=>i!==index));
   };
-  const saveResult=async()=>{
+  // status 传入时同时流转状态（「保存并完成」用）；不传则仅保存处理结果
+  const saveResult=async(status?:OrderStatus)=>{
     if(!order)return;
     setSavingResult(true);
     try{
-      await onSaveOrder({...cloudOrderToFigma(order),amount:finalPriceText===""?undefined:Number(finalPriceText),adminRemark:adminRemarkText,transferProofs:proofs});
-      // 保存成功后直接回写本地状态，避免 reload 让页面重新进入 loading
-      setOrder({...order,finalPrice:finalPriceText===""?null:Number(finalPriceText),adminRemark:adminRemarkText,transferProofs:proofs,transferProofUrls:proofPreviews,updateTime:Date.now()});
+      await onSaveOrder({...cloudOrderToFigma(order),amount:finalPriceText===""?undefined:Number(finalPriceText),finalWeight:finalWeightText===""?undefined:Number(finalWeightText),finalCount:finalCountText===""?undefined:Number(finalCountText),adminRemark:adminRemarkText,transferProofs:proofs,...(status?{status}:{})});
+      if(status){
+        // 状态流转需刷新（状态徽章/完成时间来自服务端）
+        await reload();
+      }else{
+        // 保存成功后直接回写本地状态，避免 reload 让页面重新进入 loading
+        setOrder({...order,finalPrice:finalPriceText===""?null:Number(finalPriceText),finalWeight:finalWeightText===""?null:Number(finalWeightText),finalCount:finalCountText===""?null:Number(finalCountText),adminRemark:adminRemarkText,transferProofs:proofs,transferProofUrls:proofPreviews,updateTime:Date.now()});
+      }
     }catch{/* saveOrder 内部已统一提示错误 */}
     finally{setSavingResult(false);}
+  };
+  const saveAndComplete=async()=>{
+    if(!order)return;
+    if(finalPriceText===""&&!window.confirm("最终金额未填写，确认标记完成？"))return;
+    await saveResult("已完成");
   };
   if(loading)return <div className="min-h-[520px] flex items-center justify-center gap-3 text-gray-400"><Loader size={22} className="animate-spin text-green-600"/><span className="text-sm">正在读取订单详情…</span></div>;
   if(!order)return <div className="p-6"><button onClick={onBack} className="text-sm text-green-700">← 返回订单列表</button><div className="mt-8 bg-white rounded-xl p-12 text-center text-gray-400">订单不存在或加载失败</div></div>;
   const address=order.addressSnapshot||{};
   const status=CLOUD_TO_FIGMA_STATUS[order.status]||"待上门";
+  const isTerminal=status==="已完成"||status==="已取消";
+  const hasRecycler=Boolean(order.recyclerName);
   const businessOrderType=resolveBusinessOrderType(order);
   const detailItems=order.source==="demolition"
     ? (order.demolition?.items||[]).map((name)=>({categoryName:name,demolition:true,estWeight:undefined,estCount:undefined}))
     : (order.items||[]).map((item)=>({...item,demolition:false}));
-  return <div className="p-4 md:p-6 space-y-4 md:space-y-5 max-w-6xl mx-auto">
-    <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between"><div><button onClick={onBack} className="text-sm text-green-700 hover:text-green-900 mb-2">← 返回订单列表</button><div className="flex items-center gap-2 flex-wrap"><h1 className="text-lg md:text-xl font-semibold text-gray-900">订单详情</h1><OrderTypeBadge type={businessOrderType}/><StatusBadge status={status}/></div><p className="text-xs text-gray-400 font-mono mt-1">{order.orderNo}</p></div><div className="flex items-center justify-between gap-3"><button onClick={()=>setEditing(true)} className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-sm font-medium text-white hover:opacity-90" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}><Edit2 size={14}/>编辑</button><div className="text-right text-xs text-gray-400"><p>创建时间</p><p className="font-mono mt-1">{formatCloudTime(order.createTime)}</p></div></div></div>
+  return <div className="p-4 md:p-6 space-y-3 md:space-y-5 max-w-6xl mx-auto">
+    <div className="flex items-center justify-between gap-3">
+      <button onClick={onBack} className="text-sm text-green-700 hover:text-green-900">← 返回订单列表</button>
+      <button onClick={()=>setShowDeleteConfirm(true)} disabled={deleting} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-red-600 bg-red-50 border border-red-200 hover:bg-red-100 disabled:opacity-50 flex-shrink-0"><Trash2 size={13}/>{deleting?"删除中…":"删除订单"}</button>
+    </div>
+    <div className="bg-white rounded-xl border border-gray-100 p-4 space-y-3">
+      <div className="min-w-0">
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <OrderTypeBadge type={businessOrderType}/>
+          <StatusBadge status={status}/>
+        </div>
+        <p className="text-sm text-gray-700 font-mono mt-2 break-all">{order.orderNo}</p>
+        <p className="text-[11px] text-gray-400 mt-1">下单 {formatCloudTime(order.createTime)}</p>
+      </div>
+      <div className="pt-3 border-t border-gray-50">
+        {hasRecycler?(
+          <div className="flex items-center gap-3">
+            <div className="w-9 h-9 rounded-full flex items-center justify-center text-white text-sm font-semibold flex-shrink-0" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}>{order.recyclerName?.[0]||"R"}</div>
+            <div className="flex-1 min-w-0">
+              <p className="text-sm font-medium text-gray-800">{order.recyclerName}</p>
+              <p className="text-xs text-gray-500 mt-0.5">{order.recyclerPhone}</p>
+            </div>
+            {!isTerminal&&<button onClick={()=>setShowAssignModal(true)} disabled={assigning} className="px-3 py-1.5 rounded-lg text-xs font-medium text-green-700 bg-green-50 hover:bg-green-100 disabled:opacity-50 flex-shrink-0">改派</button>}
+          </div>
+        ):(
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-sm text-gray-400">暂未分配工作人员</span>
+            {!isTerminal&&<button onClick={()=>setShowAssignModal(true)} disabled={assigning} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium text-white hover:opacity-90 disabled:opacity-50 flex-shrink-0" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}><UserPlus size={13}/>{assigning?"分配中…":"分配人员"}</button>}
+          </div>
+        )}
+      </div>
+    </div>
+    <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-4">
+      <div className="flex items-center justify-between">
+        <h2 className="font-semibold text-gray-800">处理结果</h2>
+        {isTerminal
+          ?<button onClick={()=>saveResult()} disabled={savingResult} className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 disabled:opacity-50"><Save size={13}/>{savingResult?"保存中…":"保存"}</button>
+          :<button onClick={()=>void saveAndComplete()} disabled={savingResult} className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium text-white hover:opacity-90 disabled:opacity-50" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}><CheckCircle2 size={13}/>{savingResult?"提交中…":"保存并完成"}</button>}
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div><label className="block text-xs font-medium text-gray-500 mb-1.5">最终金额（元）</label><input type="number" inputMode="decimal" step="0.01" value={finalPriceText} onChange={e=>setFinalPriceText(e.target.value)} className="w-full px-3 py-2 min-h-[44px] rounded-lg border border-gray-200 text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50 transition-all"/></div>
+        <div><label className="block text-xs font-medium text-gray-500 mb-1.5">最终重量（斤）</label><input type="number" inputMode="decimal" step="0.1" value={finalWeightText} onChange={e=>setFinalWeightText(e.target.value)} className="w-full px-3 py-2 min-h-[44px] rounded-lg border border-gray-200 text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50 transition-all"/></div>
+      </div>
+      <div>
+        <div className="flex items-center justify-between gap-2 mb-1.5">
+          <label className="text-xs font-medium text-gray-500">打款截图（选填）</label>
+          <span className="text-[11px] text-gray-400">{proofs.length}/6</span>
+        </div>
+        <input ref={proofInputRef} type="file" accept="image/jpeg,image/png,image/webp" multiple className="hidden" onChange={e=>void pickProofs(e.target.files)}/>
+        <div className="grid grid-cols-3 gap-2">
+          {proofPreviews.map((url,index)=><div key={`${url}-${index}`} className="relative aspect-[4/3]"><a href={cloudUrlToHttps(url)} target="_blank" rel="noreferrer"><img src={cloudUrlToHttps(url)} alt={`打款凭证 ${index+1}`} className="w-full h-full object-cover rounded-lg border border-gray-100"/></a><button type="button" onClick={()=>removeProof(index)} className="absolute top-1 right-1 w-5 h-5 rounded-full bg-black/55 text-white flex items-center justify-center hover:bg-red-500 shadow-sm" title="移除"><X size={11}/></button></div>)}
+          {proofs.length<6&&<button type="button" onClick={()=>proofInputRef.current?.click()} disabled={uploadingProof} className="aspect-[4/3] rounded-lg border border-dashed border-gray-300 bg-gray-50 hover:border-green-400 hover:text-green-600 flex items-center justify-center text-gray-400 disabled:opacity-60">{uploadingProof?<Loader size={18} className="animate-spin"/>:<ImageIcon size={20}/>}</button>}
+        </div>
+        {proofError&&<p className="text-xs text-red-500 mt-1.5">{proofError}</p>}
+      </div>
+      <div><label className="block text-xs font-medium text-gray-500 mb-1.5">备注说明</label><textarea value={adminRemarkText} onChange={e=>setAdminRemarkText(e.target.value)} rows={3} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50 transition-all resize-none"/></div>
+      {order.cancelReason&&<DetailField label="取消原因" value={order.cancelReason}/>}
+    </section>
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-5">
-      <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">联系人与预约</h2><div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 text-sm"><DetailField label="联系人" value={address.contactName}/><DetailField label="联系电话" value={address.phone}/><DetailField label="预约日期" value={order.appointDate}/><DetailField label="预约时段" value={order.appointSlot}/><div className="md:col-span-2"><DetailField label="上门地址" value={[address.region,address.detail].filter(Boolean).join(" ")}/></div></div></section>
-      <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">订单信息</h2><div className="grid grid-cols-1 md:grid-cols-2 gap-3 md:gap-4 text-sm"><DetailField label="订单类型" value={ORDER_TYPE_LABEL[businessOrderType]}/><DetailField label="最后修改" value={formatCloudTime(order.updateTime)}/><div className="md:col-span-2"><DetailField label="物品摘要" value={order.summary}/></div><div className="md:col-span-2"><DetailField label="用户备注" value={order.remark}/></div></div></section>
-      <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">物品明细</h2>{detailItems.length>0?<div className="divide-y divide-gray-100">{detailItems.map((item,index)=><div key={`${item.categoryName}-${index}`} className="py-3 flex justify-between text-sm"><span className="font-medium text-gray-700">{item.categoryName||"未命名项目"}</span><span className="text-gray-500">{item.demolition?"拆除评估":item.estWeight?`约 ${item.estWeight} kg`:item.estCount?`约 ${item.estCount} 件`:"待现场确认"}</span></div>)}</div>:<p className="text-sm text-gray-400">暂无结构化物品明细</p>}</section>
-      <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><div className="flex items-center justify-between"><h2 className="font-semibold text-gray-800">处理结果</h2><button onClick={saveResult} disabled={savingResult} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-white hover:opacity-90 disabled:opacity-50" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}><Save size={13}/>{savingResult?"保存中…":"保存"}</button></div><div className="space-y-3"><div><label className="block text-xs font-medium text-gray-500 mb-1.5">最终金额（元）</label><input type="number" step="0.01" value={finalPriceText} onChange={e=>setFinalPriceText(e.target.value)} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50 transition-all"/></div><div><label className="block text-xs font-medium text-gray-500 mb-1.5">备注</label><textarea value={adminRemarkText} onChange={e=>setAdminRemarkText(e.target.value)} rows={3} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50 transition-all resize-none"/></div><div><label className="block text-xs font-medium text-gray-500 mb-1.5">打款截图 / 凭证（选填，最多 9 张）</label><input ref={proofInputRef} type="file" accept="image/jpeg,image/png,image/webp" multiple className="hidden" onChange={e=>void pickProofs(e.target.files)}/><div className="grid grid-cols-3 md:grid-cols-4 gap-2.5">{proofPreviews.map((url,index)=><div key={`${url}-${index}`} className="relative group"><a href={cloudUrlToHttps(url)} target="_blank" rel="noreferrer"><img src={cloudUrlToHttps(url)} alt={`打款凭证 ${index+1}`} className="w-full aspect-square object-cover rounded-lg border border-gray-100"/></a><button type="button" onClick={()=>removeProof(index)} className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-black/60 text-white flex items-center justify-center hover:bg-red-500" title="移除"><X size={11}/></button></div>)}{proofs.length<9&&<button type="button" onClick={()=>proofInputRef.current?.click()} disabled={uploadingProof} className="w-full aspect-square rounded-lg border-2 border-dashed border-gray-200 bg-gray-50 hover:border-green-300 flex flex-col items-center justify-center gap-1 text-gray-400 disabled:opacity-60"><Upload size={18}/><span className="text-[11px]">{uploadingProof?"上传中…":"上传图片"}</span></button>}</div><p className="text-[11px] text-gray-400 mt-2">JPG / PNG / WebP，单张不超过 10MB；需点击「保存」后生效</p>{proofError&&<p className="text-xs text-red-500 mt-1">{proofError}</p>}</div>{order.cancelReason&&<DetailField label="取消原因" value={order.cancelReason}/>}</div></section>
+      <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 order-1 lg:order-none"><div className="flex items-center justify-between mb-1"><h2 className="font-semibold text-gray-800">联系人与预约</h2><button onClick={()=>setEditing(true)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 flex-shrink-0"><Edit2 size={12}/>编辑</button></div><DetailField label="联系人" value={address.contactName}/><DetailField label="联系电话" value={address.phone}/><DetailField label="预约时间" value={[order.appointDate,order.appointSlot].filter(Boolean).join(" ")}/><DetailField label="上门地址" value={[address.region,address.detail].filter(Boolean).join(" ")}/></section>
+      <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 order-3 lg:order-none"><h2 className="font-semibold text-gray-800 mb-1">订单信息</h2><DetailField label="订单类型" value={ORDER_TYPE_LABEL[businessOrderType]}/><DetailField label="最后修改" value={formatCloudTime(order.updateTime)}/><DetailField label="用户备注" value={order.remark}/></section>
+      <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4 order-4 lg:order-none">
+        <h2 className="font-semibold text-gray-800">物品明细</h2>
+        {detailItems.length>0?(
+          <div className="divide-y divide-gray-100">
+            {detailItems.map((item,index)=>(
+              <div key={`${item.categoryName}-${index}`} className="py-3 flex justify-between text-sm">
+                <span className="font-medium text-gray-700">{item.categoryName||"未命名项目"}</span>
+                <span className="text-gray-500">
+                  {item.demolition?"拆除评估":item.estWeight?`约 ${item.estWeight} 斤`:item.estCount?`约 ${item.estCount} 件`:"待现场确认"}
+                </span>
+              </div>
+            ))}
+          </div>
+        ):(
+          <p className="text-sm text-gray-400">暂无结构化物品明细</p>
+        )}
+      </section>
     </div>
     <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">物品照片</h2>{order.photoUrls&&order.photoUrls.length>0?<div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">{order.photoUrls.map((url,index)=><a key={url} href={cloudUrlToHttps(url)} target="_blank" rel="noreferrer"><img src={cloudUrlToHttps(url)} alt={`物品照片 ${index+1}`} className="w-full aspect-square object-cover rounded-lg border border-gray-100"/></a>)}</div>:<p className="text-sm text-gray-400">暂无物品照片</p>}</section>
+    <section className="bg-white rounded-xl border border-red-100 p-4 md:p-5">
+      <div className="flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <h2 className="font-semibold text-gray-800">删除订单</h2>
+          <p className="text-xs text-gray-400 mt-1">订单将从管理端列表隐藏，数据仍保留在数据库中</p>
+        </div>
+        <button onClick={()=>setShowDeleteConfirm(true)} disabled={deleting} className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg text-xs font-medium text-red-600 bg-red-50 border border-red-200 hover:bg-red-100 disabled:opacity-50 flex-shrink-0"><Trash2 size={13}/>{deleting?"删除中…":"删除订单"}</button>
+      </div>
+    </section>
+    {showDeleteConfirm&&<div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={()=>!deleting&&setShowDeleteConfirm(false)}>
+      <div className="bg-white rounded-xl w-full max-w-sm p-5 space-y-4" onClick={(event)=>event.stopPropagation()}>
+        <h3 className="font-semibold text-gray-800">确认删除该订单？</h3>
+        <p className="text-sm text-gray-500 break-all">订单号 {order.orderNo}</p>
+        <div className="flex justify-end gap-2">
+          <button onClick={()=>setShowDeleteConfirm(false)} disabled={deleting} className="px-3.5 py-2 rounded-lg text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 disabled:opacity-50">取消</button>
+          <button onClick={()=>{setDeleting(true);void onDeleteOrder(id).catch(()=>{setDeleting(false);setShowDeleteConfirm(false);});}} disabled={deleting} className="px-3.5 py-2 rounded-lg text-xs font-medium text-white bg-red-600 hover:bg-red-700 disabled:opacity-50">{deleting?"删除中…":"确认删除"}</button>
+        </div>
+      </div>
+    </div>}
     {editing&&<OrderEditModal order={cloudOrderToFigma(order)} onSave={async(o)=>{try{await onSaveOrder(o);setEditing(false);await reload();}catch{setEditing(false);}}} onClose={()=>setEditing(false)}/>}
+    {showAssignModal&&order&&<AssignRecyclerModal order={cloudOrderToFigma(order)} staff={staff} onAssign={async(person)=>{await onAssignRecycler(cloudOrderToFigma(order),person);await reload();setShowAssignModal(false);}} onClose={()=>setShowAssignModal(false)}/>}
   </div>;
 }
 
@@ -2823,7 +2936,7 @@ function UserDetailPage({userId,token,onBack,onViewOrder,onError}:{userId:string
   </div>;
 }
 
-function DetailField({label,value}:{label:string;value?:string|null}){return <div><p className="text-xs text-gray-400 mb-1">{label}</p><p className="text-sm text-gray-700 break-words">{value||"—"}</p></div>;}
+function DetailField({label,value}:{label:string;value?:string|null}){return <div className="flex items-start justify-between gap-4 py-2.5 border-b border-gray-50 last:border-0"><span className="text-sm text-gray-400 flex-shrink-0">{label}</span><span className="text-sm text-gray-700 text-right break-words min-w-0">{value||"—"}</span></div>;}
 
 const NAV=[
   {id:"orders"    as Page, path:"/orders",     label:"订单管理", icon:Package  },
@@ -3005,6 +3118,15 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
     }catch(error){onError(error);throw error;}
   };
 
+  const deleteOrder=async(docId:string)=>{
+    try{
+      await callCloud("adminDeleteOrder",{sessionToken:token,id:docId});
+      notify({kind:"success",text:"订单已删除"});
+      navigate("/orders");
+      await refresh();
+    }catch(error){onError(error);throw error;}
+  };
+
   const assignOrderRecycler=async(order:Order,person:Staff)=>{
     if(!order.docId||!person.docId){
       const error=new Error("订单或工作人员缺少数据库 ID，请刷新页面后重试");
@@ -3036,14 +3158,15 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
   };
 
   const saveCategoryNode=async(item:RecycleItem)=>{
-    const allowedUnits:CloudCategory["unit"][]=["kg","斤","台","件","双","袋","箱"];
-    const unit=allowedUnits.includes(item.unit as CloudCategory["unit"])?item.unit as CloudCategory["unit"]:"kg";
+    const allowedUnits:CloudCategory["unit"][]=["公斤","kg","斤","台","件","双","袋","箱"];
+    const unit=allowedUnits.includes(item.unit as CloudCategory["unit"])?item.unit as CloudCategory["unit"]:"公斤";
     const category:CloudCategory={
       _id:item.categoryId,
       parentId:item.parentId||null,
       name:item.name,
       unit,
-      priceRef:item.fieldEstimate?"现场估价":item.priceRef||"",
+      // 只提交数字单价，展示文案 priceRef 由云函数用 price + unit 拼出
+      price:item.fieldEstimate?null:Number(item.price)||null,
       sortOrder:item.sortOrder??0,
       enabled:item.enabled,
       showOnHome:item.parentId?false:item.showOnHome!==false,
@@ -3109,7 +3232,7 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
         <div className="px-5 py-5 border-b border-gray-100 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="w-10 h-10 rounded-xl flex items-center justify-center bg-green-50"><RefreshCw size={18} className="text-green-600"/></div>
-            <div><p className="text-gray-900 font-semibold text-base leading-tight">帮帮回收</p><p className="text-gray-400 text-xs">管理后台 v1.0</p></div>
+            <div><p className="text-gray-900 font-semibold text-base leading-tight">来卖吧</p><p className="text-gray-400 text-xs">管理后台 v1.0</p></div>
           </div>
           <button onClick={()=>setMobileMenuOpen(false)} className="md:hidden p-2 rounded-lg text-gray-400 hover:bg-gray-100"><X size={18}/></button>
         </div>
@@ -3138,7 +3261,7 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
           </div>
           <div className="flex items-center gap-2 text-xs text-gray-400"><div className="w-2 h-2 rounded-full bg-green-400 animate-pulse"/><span className="hidden sm:inline">系统运行正常</span></div>
         </div>
-        {detailId?<AdminOrderDetailPage id={detailId} token={token} onSaveOrder={saveOrder} onBack={()=>navigate("/orders")} onError={onError}/>:userDetailId?<UserDetailPage userId={userDetailId} token={token} onBack={()=>navigate("/staff")} onViewOrder={(id)=>navigate(`/orders/${encodeURIComponent(id)}`)} onError={onError}/>:loading?<div className="min-h-[420px] flex flex-col items-center justify-center text-gray-400 gap-3"><Loader size={24} className="animate-spin text-green-600"/><p className="text-sm">正在加载真实业务数据…</p></div>:<>
+        {detailId?<AdminOrderDetailPage id={detailId} token={token} staff={staff} onSaveOrder={saveOrder} onAssignRecycler={assignOrderRecycler} onDeleteOrder={deleteOrder} onBack={()=>navigate("/orders")} onError={onError}/>:userDetailId?<UserDetailPage userId={userDetailId} token={token} onBack={()=>navigate("/staff")} onViewOrder={(id)=>navigate(`/orders/${encodeURIComponent(id)}`)} onError={onError}/>:loading?<div className="min-h-[420px] flex flex-col items-center justify-center text-gray-400 gap-3"><Loader size={24} className="animate-spin text-green-600"/><p className="text-sm">正在加载真实业务数据…</p></div>:<>
           {page==="orders"    &&<OrdersPage staff={staff} groups={groups} orders={orders} onSaveOrder={saveOrder} onAssignRecycler={assignOrderRecycler} onUnsupported={unsupported} onViewOrder={(id)=>navigate(`/orders/${encodeURIComponent(id)}`)}/>}
           {page==="staff"     &&<StaffPage staff={staff} users={users} admins={admins} onSaveStaff={saveStaff} onSaveAdmin={saveAdmin} onToggleAdmin={toggleAdmin} onViewUser={(id)=>navigate(`/users/${encodeURIComponent(id)}`)}/>}
           {page==="cats"      &&<CategoryTreePage nodes={categoryTree} onSave={saveCategoryNode} onDelete={deleteCategory}/>}

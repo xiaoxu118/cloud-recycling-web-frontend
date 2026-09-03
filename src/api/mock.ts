@@ -61,8 +61,6 @@ let categories: Category[] = [
 
 let settings: RecycleSettings = {
   key: "recycle_rules",
-  minWeightKg: 5,
-  minCount: 0,
   photoOrderCheckMinQuantity: false,
   updateTime: Date.now() - 3 * 24 * 60 * 60 * 1000,
 };
@@ -71,7 +69,7 @@ let systemSettings: SystemSetting[] = [
   { key: "service_phone", label: "客服电话", type: "text", value: "400-800-1234", description: "小程序首页展示及拨打的客服电话" },
   { key: "user_agreement", label: "用户协议", type: "longtext", value: "", description: "小程序登录页展示，用户点击《用户协议》弹窗内容" },
   { key: "privacy_policy", label: "隐私政策", type: "longtext", value: "", description: "小程序登录页展示，用户点击《隐私政策》弹窗内容" },
-  { key: "terms_of_service", label: "服务条款", type: "longtext", value: "", description: "小程序下单页展示，用户点击《帮帮回收上门服务条款》弹窗内容" },
+  { key: "terms_of_service", label: "服务条款", type: "longtext", value: "", description: "小程序下单页展示，用户点击《来卖吧上门服务条款》弹窗内容" },
 ];
 
 // Mock 仅用于显式的 ?mock=1 本地预览；生产环境始终调用云函数。

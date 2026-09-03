@@ -54,7 +54,11 @@ export interface Category {
   _id?: string;
   parentId?: string | null;
   name: string;
-  unit: "kg" | "斤" | "台" | "件" | "双" | "袋" | "箱";
+  /** 计量单位。"kg" 为历史存量值，新建品类统一用"公斤" */
+  unit: "公斤" | "kg" | "斤" | "台" | "件" | "双" | "袋" | "箱";
+  /** 数字单价（权威数据）。null 表示现场估价 */
+  price?: number | null;
+  /** 展示文案，由云函数用 price + unit 拼出，管理端只读 */
   priceRef?: string;
   minVisitKg?: number;
   sortOrder: number;
@@ -66,8 +70,6 @@ export interface Category {
 
 export interface RecycleSettings {
   key: "recycle_rules";
-  minWeightKg: number;
-  minCount: number;
   photoOrderCheckMinQuantity: boolean;
   updateTime?: number;
 }
