@@ -7,7 +7,7 @@ import {
   AlarmClock, Lock, SlidersHorizontal, Store, ChevronUp, Columns3,
   Upload, FileSpreadsheet, Download, AlertCircle, Navigation,
   BarChart2, TrendingUp, CheckCircle2, Coins, ArrowUpRight, Shield, RotateCcw,
-  Menu, Filter, MessageSquare, type LucideIcon,
+  Menu, Filter, MessageSquare, Ban, type LucideIcon,
 } from "lucide-react";
 import {
   ResponsiveContainer, ComposedChart, LineChart, Line, BarChart, Bar,
@@ -23,21 +23,25 @@ import type {
   Order as CloudOrder,
   OrderListResult,
   OrderStatus as CloudOrderStatus,
+  PointsRecord,
+  PointsRecordListResult,
+  PointsRecordType,
   RecycleSettings,
   StaffRecord,
   SystemSetting,
+  UserPointsDetail,
   UserRecord,
 } from "../types";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-type Page = "orders" | "staff" | "cats" | "analytics" | "feedback" | "system";
+type Page = "orders" | "staff" | "cats" | "analytics" | "feedback" | "points" | "system";
 type OrderStatus = "待上门" | "进行中" | "已完成" | "已取消";
 type StaffStatus = "online" | "resting" | "resigned";
 type BusinessOrderType = "recycle" | "furniture_demolition" | "shop_demolition";
 
 interface Staff {
   id: string; name: string; phone: string; docId?: string; wechatBound?: boolean;
-  status: StaffStatus; joinDate: string; area: string; store: string;
+  status: StaffStatus; joinDate: string; area: string; store: string; createTime?: number;
 }
 interface RecycleItem {
   id: string; name: string; unit: string;
@@ -288,6 +292,7 @@ const staffFromCloud = (staff: StaffRecord[]): Staff[] => staff.map((item) => ({
   joinDate: item.joinDate || "—",
   area: item.area || "—",
   store: item.store || "—",
+  createTime: item.createTime,
 }));
 
 // ─── Initial Data ─────────────────────────────────────────────────────────────
@@ -857,7 +862,6 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
     dragCol.current=null;
   };
 
-  const statuses:( OrderStatus|"全部")[]=["全部","待上门","进行中","已完成","已取消"];
   const visibleCols=cols.filter(c=>!hiddenCols.has(c.id));
   // 除状态外的筛选条件；统计卡基于它计算，避免选中某状态后其余状态数变 0
   const matchesNonStatus=(o:Order)=>{
@@ -971,28 +975,25 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
       </div>
 
       {/* Filters */}
-      <div className="hidden md:block bg-white rounded-xl p-4 space-y-3">
-        <div className="flex flex-wrap items-center gap-3">
-          <div className="relative flex-1 min-w-[200px]">
+      <div className="hidden md:block bg-white rounded-xl p-4">
+        <div className="flex items-center gap-3">
+          <div className="relative w-1/3 min-w-[180px]">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/>
             <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="搜索订单号、用户名、电话、物品摘要…" className="w-full pl-9 pr-4 py-2 rounded-lg border border-gray-200 text-sm outline-none focus:border-green-400 focus:ring-2 focus:ring-green-50 transition-all"/>
           </div>
-          <div className="flex gap-1.5 flex-wrap">
-            {statuses.map(s=>(<button key={s} onClick={()=>setFilterStatus(s)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${filterStatus===s?"bg-green-600 text-white":"bg-gray-100 text-gray-500 hover:bg-gray-200"}`}>{s}</button>))}
+          <div className="ml-auto flex items-center gap-3">
+            <span className="text-xs font-medium text-gray-500 whitespace-nowrap">日期筛选：</span>
+            <div className="flex gap-1.5">
+              {([{v:"appointment" as const,l:"按预约时间"},{v:"completed" as const,l:"按完成时间"}]).map(opt=>(<button key={opt.v} onClick={()=>setDateFilterType(opt.v)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${dateFilterType===opt.v?"bg-green-600 text-white":"bg-gray-100 text-gray-500 hover:bg-gray-200"}`}>{opt.l}</button>))}
+            </div>
+            <div className="flex items-center gap-2">
+              <input type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs outline-none focus:border-green-400 transition-all"/>
+              <span className="text-xs text-gray-400">至</span>
+              <input type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)} className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs outline-none focus:border-green-400 transition-all"/>
+              {(dateFrom||dateTo)&&<button onClick={()=>{setDateFrom("");setDateTo("");}} className="text-gray-400 hover:text-red-500 transition-colors p-1.5 rounded-lg hover:bg-red-50"><X size={13}/></button>}
+            </div>
+            <ColVisibilityMenu cols={cols} hidden={hiddenCols} onToggle={toggleHiddenCol}/>
           </div>
-        </div>
-        <div className="flex flex-wrap items-center gap-3 pt-2 border-t border-gray-50">
-          <span className="text-xs font-medium text-gray-500 whitespace-nowrap">日期筛选：</span>
-          <div className="flex gap-1.5">
-            {([{v:"appointment" as const,l:"按预约时间"},{v:"completed" as const,l:"按完成时间"}]).map(opt=>(<button key={opt.v} onClick={()=>setDateFilterType(opt.v)} className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${dateFilterType===opt.v?"bg-green-600 text-white":"bg-gray-100 text-gray-500 hover:bg-gray-200"}`}>{opt.l}</button>))}
-          </div>
-          <div className="flex items-center gap-2">
-            <input type="date" value={dateFrom} onChange={e=>setDateFrom(e.target.value)} className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs outline-none focus:border-green-400 transition-all"/>
-            <span className="text-xs text-gray-400">至</span>
-            <input type="date" value={dateTo} onChange={e=>setDateTo(e.target.value)} className="px-3 py-1.5 rounded-lg border border-gray-200 text-xs outline-none focus:border-green-400 transition-all"/>
-            {(dateFrom||dateTo)&&<button onClick={()=>{setDateFrom("");setDateTo("");}} className="text-gray-400 hover:text-red-500 transition-colors p-1.5 rounded-lg hover:bg-red-50"><X size={13}/></button>}
-          </div>
-          <div className="ml-auto"><ColVisibilityMenu cols={cols} hidden={hiddenCols} onToggle={toggleHiddenCol}/></div>
         </div>
       </div>
 
@@ -1115,7 +1116,21 @@ function StaffPage({ staff,users,admins,onSaveStaff,onSaveAdmin,onToggleAdmin,on
   const [tab,setTab]=useState<"users"|"staff"|"admins">("users");
   const [editing,setEditing]=useState<Staff|null|undefined>(undefined);
   const adminAddRef=useRef<()=>void>(null);
+  const [userPage,setUserPage]=useState(1);
+  const USER_PAGE_SIZE=20;
   const counts={online:staff.filter(s=>s.status==="online").length,resting:staff.filter(s=>s.status==="resting").length,resigned:staff.filter(s=>s.status==="resigned").length};
+  const userTotalPages=Math.max(1,Math.ceil(users.length/USER_PAGE_SIZE));
+  const userSafePage=Math.min(userPage,userTotalPages);
+  const pagedUsers=users.slice((userSafePage-1)*USER_PAGE_SIZE,userSafePage*USER_PAGE_SIZE);
+  function buildUserPageItems(total:number,cur:number):(number|"...")[]{
+    if(total<=7)return Array.from({length:total},(_,i)=>i+1);
+    const items=new Set<number>([1,total,cur-1,cur,cur+1].filter(p=>p>=1&&p<=total));
+    const sorted=[...items].sort((a,b)=>a-b);
+    const result:(number|"...")[]=[];
+    sorted.forEach((p,i)=>{if(i>0&&p-sorted[i-1]>1)result.push("...");result.push(p);});
+    return result;
+  }
+  const userPageItems=buildUserPageItems(userTotalPages,userSafePage);
   return(
     <div className="p-6 space-y-5">
       <div className="flex items-center justify-between">
@@ -1132,28 +1147,38 @@ function StaffPage({ staff,users,admins,onSaveStaff,onSaveAdmin,onToggleAdmin,on
         ))}
       </div>}
       {tab==="users"?<>
-        {/* Mobile User Cards */}
-        <div className="md:hidden space-y-3">
-          {users.length===0?<div className="bg-white rounded-xl p-8 text-center text-sm text-gray-400 border border-gray-100">暂无已同步的小程序用户</div>:users.map(user=>(
-            <div key={user._id} onClick={()=>onViewUser?.(user._id)} className="bg-white rounded-xl p-4 border border-gray-100 cursor-pointer hover:border-green-200 active:bg-gray-50 transition-colors">
-              <div className="flex items-center gap-3 mb-3">
-                {user.avatarUrl?<img src={cloudUrlToHttps(user.avatarUrl)} className="w-10 h-10 rounded-full"/>:<div className="w-10 h-10 rounded-full bg-green-100 text-green-700 flex items-center justify-center"><User size={16}/></div>}
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium text-gray-800 truncate">{user.nickName||"微信用户"}</p>
-                  <p className="text-xs font-mono text-gray-500">{user.phone||"未绑定手机"}</p>
-                </div>
-                <span className={`inline-flex rounded-full px-2 py-0.5 text-xs ${user.wechatBound?"bg-green-50 text-green-700":"bg-gray-100 text-gray-500"}`}>{user.wechatBound?"已绑定":"未绑定"}</span>
-              </div>
-              <div className="flex items-center justify-between text-xs text-gray-500 pt-2 border-t border-gray-50">
-                <span>订单 {user.orderCount}</span>
-                <span>地址 {user.addressCount}</span>
-                <span>{formatCloudTime(user.lastLoginTime||user.updateTime)}</span>
-              </div>
-            </div>
-          ))}
-        </div>
         {/* Desktop User Table */}
-        <div className="hidden md:block bg-white rounded-xl overflow-hidden border border-gray-100"><table className="w-full"><thead><tr className="bg-gray-50 border-b border-gray-100">{["用户","联系电话","微信状态","订单数","地址数","最近活跃"].map(h=><th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-500">{h}</th>)}</tr></thead><tbody>{users.map(user=><tr key={user._id} onClick={()=>onViewUser?.(user._id)} className="border-b border-gray-50 cursor-pointer hover:bg-gray-50 transition-colors"><td className="px-4 py-3"><div className="flex items-center gap-2">{user.avatarUrl?<img src={cloudUrlToHttps(user.avatarUrl)} className="w-8 h-8 rounded-full"/>:<div className="w-8 h-8 rounded-full bg-green-100 text-green-700 flex items-center justify-center"><User size={14}/></div>}<span className="text-sm font-medium">{user.nickName||"微信用户"}</span></div></td><td className="px-4 py-3 text-xs font-mono">{user.phone||"—"}</td><td className="px-4 py-3"><span className={`inline-flex rounded-full px-2 py-1 text-xs ${user.wechatBound?"bg-green-50 text-green-700":"bg-gray-100 text-gray-500"}`}>{user.wechatBound?"已绑定":"未绑定"}</span></td><td className="px-4 py-3 text-sm">{user.orderCount}</td><td className="px-4 py-3 text-sm">{user.addressCount}</td><td className="px-4 py-3 text-xs text-gray-500">{formatCloudTime(user.lastLoginTime||user.updateTime)}</td></tr>)}{users.length===0&&<tr><td colSpan={6} className="px-6 py-16 text-center text-sm text-gray-400">暂无已同步的小程序用户</td></tr>}</tbody></table></div>
+        <div className="bg-white rounded-xl overflow-hidden border border-gray-100">
+        <table className="w-full">
+          <thead>
+            <tr className="bg-gray-50 border-b border-gray-100">
+              {["用户","联系电话","微信状态","订单数","地址数","创建时间","最近活跃"].map(h=><th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-500">{h}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {pagedUsers.map((user,i)=>(
+              <tr key={user._id} onClick={()=>onViewUser?.(user._id)} className={`border-b border-gray-50 cursor-pointer hover:bg-gray-50 transition-colors ${i%2===1?"bg-gray-50/20":""}`}>
+                <td className="px-4 py-3"><div className="flex items-center gap-2">{user.avatarUrl?<img src={cloudUrlToHttps(user.avatarUrl)} className="w-8 h-8 rounded-full"/>:<div className="w-8 h-8 rounded-full bg-green-100 text-green-700 flex items-center justify-center"><User size={14}/></div>}<span className="text-sm font-medium">{user.nickName||"微信用户"}</span></div></td>
+                <td className="px-4 py-3 text-xs font-mono">{user.phone||"—"}</td>
+                <td className="px-4 py-3"><span className={`inline-flex rounded-full px-2 py-1 text-xs ${user.wechatBound?"bg-green-50 text-green-700":"bg-gray-100 text-gray-500"}`}>{user.wechatBound?"已绑定":"未绑定"}</span></td>
+                <td className="px-4 py-3 text-sm">{user.orderCount}</td>
+                <td className="px-4 py-3 text-sm">{user.addressCount}</td>
+                <td className="px-4 py-3 text-xs font-mono text-gray-500">{formatCloudTime(user.createTime)}</td>
+                <td className="px-4 py-3 text-xs text-gray-500">{formatCloudTime(user.lastLoginTime||user.updateTime)}</td>
+              </tr>
+            ))}
+            {users.length===0&&<tr><td colSpan={7} className="px-6 py-16 text-center text-sm text-gray-400">暂无已同步的小程序用户</td></tr>}
+          </tbody>
+        </table>
+        <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-between">
+          <span className="text-xs text-gray-400">显示 {pagedUsers.length} / {users.length} 条</span>
+          <div className="flex items-center gap-1">
+            <button disabled={userSafePage<=1} onClick={()=>setUserPage(p=>Math.max(1,p-1))} className="w-7 h-7 rounded-lg text-xs font-medium flex items-center justify-center border border-gray-200 text-gray-500 disabled:opacity-30 disabled:cursor-not-allowed">‹</button>
+            {userPageItems.map((item,idx)=>item==="..."?<span key={`de${idx}`} className="w-5 text-center text-xs text-gray-400">…</span>:<button key={item} onClick={()=>setUserPage(item as number)} className={`w-7 h-7 rounded-lg text-xs font-medium transition-all ${item===userSafePage?"bg-green-600 text-white":"text-gray-500 hover:bg-gray-100"}`}>{item}</button>)}
+            <button disabled={userSafePage>=userTotalPages} onClick={()=>setUserPage(p=>Math.min(userTotalPages,p+1))} className="w-7 h-7 rounded-lg text-xs font-medium flex items-center justify-center border border-gray-200 text-gray-500 disabled:opacity-30 disabled:cursor-not-allowed">›</button>
+          </div>
+        </div>
+        </div>
       </>:tab==="staff"?<>
         {/* Mobile Staff Cards */}
         <div className="md:hidden space-y-3">
@@ -1174,6 +1199,7 @@ function StaffPage({ staff,users,admins,onSaveStaff,onSaveAdmin,onToggleAdmin,on
               </div>
               <div className="flex items-center justify-between pt-2 border-t border-gray-50">
                 <span className="text-xs text-gray-400">入职 {s.joinDate}</span>
+                <span className="text-xs text-gray-400">创建 {formatCloudTime(s.createTime)}</span>
                 <div className="flex gap-2">
                   <button onClick={()=>setEditing(s)} className="px-3 py-1.5 rounded-lg text-xs font-medium text-blue-600 bg-blue-50">编辑</button>
                   <button onClick={()=>void onSaveStaff({...s,status:"resigned"})} className="px-3 py-1.5 rounded-lg text-xs font-medium text-red-500 bg-red-50">停用</button>
@@ -1187,7 +1213,7 @@ function StaffPage({ staff,users,admins,onSaveStaff,onSaveAdmin,onToggleAdmin,on
         <table className="w-full">
           <thead>
             <tr className="bg-gray-50 border-b border-gray-100">
-              {["工号","姓名","联系电话","门店","服务区域","入职日期","状态","权限管理","操作"].map(h=>(
+              {["工号","姓名","联系电话","门店","服务区域","入职日期","创建时间","状态","权限管理","操作"].map(h=>(
                 <th key={h} className="text-left px-4 py-3 text-xs font-semibold text-gray-500 border-r border-gray-200 last:border-0">{h}</th>
               ))}
             </tr>
@@ -1212,6 +1238,7 @@ function StaffPage({ staff,users,admins,onSaveStaff,onSaveAdmin,onToggleAdmin,on
                 </td>
                 <td className="px-4 py-3 border-r border-gray-50"><span className="text-sm text-gray-600">{s.area}</span></td>
                 <td className="px-4 py-3 border-r border-gray-50"><span className="text-xs font-mono text-gray-500">{s.joinDate}</span></td>
+                <td className="px-4 py-3 border-r border-gray-50"><span className="text-xs font-mono text-gray-500">{formatCloudTime(s.createTime)}</span></td>
                 <td className="px-4 py-3 border-r border-gray-50"><button onClick={()=>void onSaveStaff({...s,status:STAFF_CFG[s.status].next})} title="点击切换状态"><StaffBadge status={s.status}/></button></td>
                 <td className="px-4 py-3 border-r border-gray-50">
                   <span className={`inline-flex rounded-full px-2 py-1 text-xs ${s.wechatBound?"bg-green-50 text-green-700":"bg-gray-100 text-gray-500"}`}>{s.wechatBound?"微信已绑定":"微信未绑定"}</span>
@@ -1224,7 +1251,7 @@ function StaffPage({ staff,users,admins,onSaveStaff,onSaveAdmin,onToggleAdmin,on
                 </td>
               </tr>
             ))}
-            {staff.length===0&&<tr><td colSpan={9} className="px-6 py-16 text-center"><Users size={32} className="mx-auto text-gray-200 mb-3"/><p className="text-sm text-gray-400">暂无工作人员数据</p></td></tr>}
+            {staff.length===0&&<tr><td colSpan={10} className="px-6 py-16 text-center"><Users size={32} className="mx-auto text-gray-200 mb-3"/><p className="text-sm text-gray-400">暂无工作人员数据</p></td></tr>}
           </tbody>
         </table>
       </div>
@@ -1840,6 +1867,8 @@ function CategoryNodeModal({nodes,initial,onSave,onClose,onDelete}:{nodes:Catego
     if(!form.name.trim()){setError("请填写品类名称");return;}
     if(allNodes.some((item)=>item.id!==initial?.id&&item.name.trim().toLowerCase()===form.name.trim().toLowerCase())){setError("品类名称不能重复");return;}
     setSaving(true);
+    // 一级分类只做分组，不承载价格 / 现场估价 / 起收门槛，保存时统一清空避免残留旧值。
+    const isRoot=!form.parentId;
     try{
       await onSave({
         ...initial,
@@ -1848,13 +1877,13 @@ function CategoryNodeModal({nodes,initial,onSave,onClose,onDelete}:{nodes:Catego
         parentId:form.parentId||null,
         name:form.name.trim(),
         unit:form.unit,
-        price:form.fieldEstimate?"—":form.price||"—",
+        price:isRoot?"—":form.fieldEstimate?"—":form.price||"—",
         stationPrice:initial?.stationPrice||"—",
         sortOrder:form.sortOrder,
-        fieldEstimate:form.fieldEstimate,
+        fieldEstimate:isRoot?false:form.fieldEstimate,
         enabled:form.enabled,
         showOnHome:form.parentId?false:form.showOnHome,
-        minVisitKg: form.minVisitKg.trim()==="" ? undefined : Number(form.minVisitKg),
+        minVisitKg: isRoot||form.minVisitKg.trim()==="" ? undefined : Number(form.minVisitKg),
       });
       onClose();
     }finally{setSaving(false);}
@@ -1893,17 +1922,17 @@ function CategoryNodeModal({nodes,initial,onSave,onClose,onDelete}:{nodes:Catego
         </div>
         <div className="grid grid-cols-2 gap-4">
           <label><span className="block text-xs font-medium text-gray-500 mb-1.5">计量单位</span><select value={form.unit} onChange={(event)=>setForm({...form,unit:event.target.value})} className={`${inputClass} bg-white`}>{["公斤","斤","台","件","双","袋","箱"].map((unit)=><option key={unit}>{unit}</option>)}</select></label>
-          <label><span className="block text-xs font-medium text-gray-500 mb-1.5">参考价格（元）</span><input disabled={form.fieldEstimate} value={form.price} onChange={(event)=>setForm({...form,price:event.target.value})} placeholder={form.fieldEstimate?"现场估价":"可留空"} className={`${inputClass} disabled:bg-gray-100`}/></label><label><span className="block text-xs font-medium text-gray-500 mb-1.5">最低上门门槛（{form.unit}）<span className="text-gray-300 font-normal"> · 留空不限制</span></span><input type="number" min={0} step={0.1} value={form.minVisitKg} onChange={(event)=>setForm({...form,minVisitKg:event.target.value})} placeholder={`例如：10（单位：${form.unit}）`} className={`${inputClass} font-mono`}/></label>
+          {form.parentId&&<><label><span className="block text-xs font-medium text-gray-500 mb-1.5">参考价格（元）</span><input disabled={form.fieldEstimate} value={form.price} onChange={(event)=>setForm({...form,price:event.target.value})} placeholder={form.fieldEstimate?"现场估价":"可留空"} className={`${inputClass} disabled:bg-gray-100`}/></label><label><span className="block text-xs font-medium text-gray-500 mb-1.5">最低上门门槛（{form.unit}）<span className="text-gray-300 font-normal"> · 留空不限制</span></span><input type="number" min={0} step={0.1} value={form.minVisitKg} onChange={(event)=>setForm({...form,minVisitKg:event.target.value})} placeholder={`例如：10（单位：${form.unit}）`} className={`${inputClass} font-mono`}/></label></>}
         </div>
-        <div className="flex items-center justify-between px-3 py-2 bg-amber-50 rounded-xl"><div><p className="text-sm font-medium text-amber-800">现场估价</p><p className="text-xs text-amber-600">该节点不设置固定参考价格</p></div><button onClick={()=>setForm({...form,fieldEstimate:!form.fieldEstimate})}>{form.fieldEstimate?<ToggleRight size={26} className="text-amber-500"/>:<ToggleLeft size={26} className="text-gray-300"/>}</button></div>
+        {form.parentId&&<div className="flex items-center justify-between px-3 py-2 bg-amber-50 rounded-xl"><div><p className="text-sm font-medium text-amber-800">现场估价</p><p className="text-xs text-amber-600">该节点不设置固定参考价格</p></div><button onClick={()=>setForm({...form,fieldEstimate:!form.fieldEstimate})}>{form.fieldEstimate?<ToggleRight size={26} className="text-amber-500"/>:<ToggleLeft size={26} className="text-gray-300"/>}</button></div>}
         {!form.parentId&&<div className="flex items-center justify-between px-3 py-2 bg-green-50 rounded-xl"><div><p className="text-sm font-medium text-green-800">首页展示</p><p className="text-xs text-green-600">首页最多展示排序靠前的 4 个一级类别</p></div><button onClick={()=>setForm({...form,showOnHome:!form.showOnHome})}>{form.showOnHome?<ToggleRight size={26} className="text-green-500"/>:<ToggleLeft size={26} className="text-gray-300"/>}</button></div>}
         <div className="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-xl"><div><p className="text-sm font-medium text-gray-700">启用节点</p><p className="text-xs text-gray-400">停用后该节点不在小程序展示</p></div><button onClick={()=>setForm({...form,enabled:!form.enabled})}>{form.enabled?<ToggleRight size={26} className="text-green-500"/>:<ToggleLeft size={26} className="text-gray-300"/>}</button></div>
       </div>
       <div className="flex items-center gap-2 px-6 py-4 border-t border-gray-100 bg-gray-50/50">
-        {initial&&onDelete&&(
+        {initial&&onDelete&&initial.enabled&&(
           <button type="button" onClick={()=>void handleDeleteClick()} disabled={deleting} className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-sm transition-colors disabled:opacity-50 mr-auto ${confirmingDelete?"bg-red-600 text-white hover:bg-red-700":"text-red-500 hover:bg-red-50"}`}>
-            <Trash2 size={14}/>
-            {deleting?"删除中…":confirmingDelete?(descendantCount?`确认删除（含 ${descendantCount} 个子节点）？`:"确认删除？"):"删除"}
+            <Ban size={14}/>
+            {deleting?"停用中…":confirmingDelete?(descendantCount?`确认停用（含 ${descendantCount} 个子节点）？`:"确认停用？"):"停用"}
           </button>
         )}
         <button onClick={onClose} className="px-4 py-2 text-sm text-gray-500">取消</button>
@@ -1931,12 +1960,16 @@ function CategoryTreePage({nodes,onSave,onDelete}:{nodes:CategoryNode[];onSave:(
   const visible=filterCategoryTree(nodes,search);
   const toggle=(id:string)=>setExpanded((current)=>{const next=new Set(current);next.has(id)?next.delete(id):next.add(id);return next;});
   // 单位/参考价/上门门槛不再单独占列，折进品类名下方的一行摘要，避免表格横向滚动。
+  // 一级分类只做分组，不展示价格与起收门槛。
   const metaOf=(item:CategoryNode)=>{
     const parts:string[]=[];
-    if(item.fieldEstimate) parts.push("现场估价");
-    else if(item.price&&item.price!=="—") parts.push(`¥${item.price}${item.unit?`/${item.unit}`:""}`);
-    else if(item.unit) parts.push(item.unit);
-    if(typeof item.minVisitKg==="number") parts.push(`≥ ${item.minVisitKg}${item.unit||""}`);
+    const isRoot=!item.parentId;
+    if(!isRoot){
+      if(item.fieldEstimate) parts.push("现场估价");
+      else if(item.price&&item.price!=="—") parts.push(`¥${item.price}${item.unit?`/${item.unit}`:""}`);
+      else if(item.unit) parts.push(item.unit);
+      if(typeof item.minVisitKg==="number") parts.push(`≥ ${item.minVisitKg}${item.unit||""}`);
+    }
     if(item.children.length>0) parts.push(`${item.children.length} 个子节点`);
     return parts.join(" · ");
   };
@@ -2678,7 +2711,7 @@ function AnalyticsPage({ orders }:{ orders:Order[] }) {
 }
 
 // ─── Main Layout ──────────────────────────────────────────────────────────────
-function AdminOrderDetailPage({id,token,staff,onSaveOrder,onAssignRecycler,onDeleteOrder,onBack,onError}:{id:string;token:string;staff:Staff[];onSaveOrder:(order:Order)=>Promise<void>;onAssignRecycler:(order:Order,person:Staff)=>Promise<void>;onDeleteOrder:(docId:string)=>Promise<void>;onBack:()=>void;onError:(error:unknown)=>void}){
+function AdminOrderDetailPage({id,token,staff,onSaveOrder,onAssignRecycler,onDeleteOrder,onBack,onError,notify}:{id:string;token:string;staff:Staff[];onSaveOrder:(order:Order)=>Promise<void>;onAssignRecycler:(order:Order,person:Staff)=>Promise<void>;onDeleteOrder:(docId:string)=>Promise<void>;onBack:()=>void;onError:(error:unknown)=>void;notify:(message:{kind:"success"|"error";text:string})=>void}){
   const [editing,setEditing]=useState(false);
   const [showDeleteConfirm,setShowDeleteConfirm]=useState(false);
   const [deleting,setDeleting]=useState(false);
@@ -2696,6 +2729,7 @@ function AdminOrderDetailPage({id,token,staff,onSaveOrder,onAssignRecycler,onDel
   const [proofError,setProofError]=useState("");
   const proofInputRef=useRef<HTMLInputElement>(null);
   const [showAssignModal,setShowAssignModal]=useState(false);
+  const [regranting,setRegranting]=useState(false);
   const reload=useCallback(async()=>{
     setLoading(true);
     try{
@@ -2757,6 +2791,17 @@ function AdminOrderDetailPage({id,token,staff,onSaveOrder,onAssignRecycler,onDel
     if(!order)return;
     if(finalPriceText===""&&!window.confirm("最终金额未填写，确认标记完成？"))return;
     await saveResult("已完成");
+  };
+  // 积分同步失败或漏发时的人工补发。幂等键仍由后端按订单发放轮次生成，重复点击不会多发
+  const regrantPoints=async()=>{
+    if(!order)return;
+    setRegranting(true);
+    try{
+      const data=await callCloud<{points:number}>("adminRegrantOrderPoints",{sessionToken:token,orderId:order._id});
+      notify({kind:"success",text:`已补发 ${Number(data?.points||0).toLocaleString("zh-CN")} 积分`});
+      await reload();
+    }catch(error){onError(error);}
+    finally{setRegranting(false);}
   };
   if(loading)return <div className="min-h-[520px] flex items-center justify-center gap-3 text-gray-400"><Loader size={22} className="animate-spin text-green-600"/><span className="text-sm">正在读取订单详情…</span></div>;
   if(!order)return <div className="p-6"><button onClick={onBack} className="text-sm text-green-700">← 返回订单列表</button><div className="mt-8 bg-white rounded-xl p-12 text-center text-gray-400">订单不存在或加载失败</div></div>;
@@ -2847,6 +2892,23 @@ function AdminOrderDetailPage({id,token,staff,onSaveOrder,onAssignRecycler,onDel
         )}
       </section>
     </div>
+    <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="font-semibold text-gray-800 flex items-center gap-2"><Coins size={16} className="text-green-600"/>回收积分</h2>
+        {status==="已完成"&&<button onClick={()=>void regrantPoints()} disabled={regranting} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium text-green-700 bg-green-50 hover:bg-green-100 disabled:opacity-50 flex-shrink-0"><RotateCcw size={12}/>{regranting?"补发中…":"补发积分"}</button>}
+      </div>
+      <div className="flex items-baseline gap-2">
+        <span className="text-2xl font-semibold text-gray-900">{Number(order.pointsGranted||0).toLocaleString("zh-CN")}</span>
+        <span className="text-sm text-gray-400">积分</span>
+        {order.pointsGrantAt?<span className="text-xs text-gray-400 ml-2">发放于 {formatCloudTime(order.pointsGrantAt)}</span>:null}
+      </div>
+      {order.pointsGrantError
+        ?<div className="flex items-start gap-2 rounded-lg bg-red-50 border border-red-100 px-3 py-2">
+          <AlertCircle size={14} className="text-red-500 mt-0.5 flex-shrink-0"/>
+          <p className="text-xs text-red-600 break-all">积分同步失败（{order.pointsGrantError}），请点击「补发积分」重试</p>
+        </div>
+        :<p className="text-xs text-gray-400">订单完成后按最终金额自动发放，撤回完成状态时会自动冲正扣回</p>}
+    </section>
     <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4"><h2 className="font-semibold text-gray-800">物品照片</h2>{order.photoUrls&&order.photoUrls.length>0?<div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">{order.photoUrls.map((url,index)=><a key={url} href={cloudUrlToHttps(url)} target="_blank" rel="noreferrer"><img src={cloudUrlToHttps(url)} alt={`物品照片 ${index+1}`} className="w-full aspect-square object-cover rounded-lg border border-gray-100"/></a>)}</div>:<p className="text-sm text-gray-400">暂无物品照片</p>}</section>
     <section className="bg-white rounded-xl border border-red-100 p-4 md:p-5">
       <div className="flex items-center justify-between gap-3">
@@ -2872,10 +2934,169 @@ function AdminOrderDetailPage({id,token,staff,onSaveOrder,onAssignRecycler,onDel
   </div>;
 }
 
+// ─── Points Page ──────────────────────────────────────────────────────────────
+const POINTS_TYPE_LABEL:Record<PointsRecordType,string>={
+  earn_order:"订单获得",
+  adjust_order:"订单调整",
+  revoke_order:"订单冲正",
+  admin_adjust:"手动调整",
+  exchange:"兑换消耗",
+  refund:"兑换退回",
+  expire:"过期扣减",
+};
+
+const formatPoints=(value?:number|null)=>{
+  const number=Number(value)||0;
+  return `${number>0?"+":""}${number.toLocaleString("zh-CN")}`;
+};
+
+function PointsTypeBadge({type}:{type:PointsRecordType}){
+  const earn=["earn_order","adjust_order","admin_adjust","refund"].includes(type);
+  return <span className={`inline-flex rounded-full px-2 py-0.5 text-xs border whitespace-nowrap ${earn?"bg-green-50 text-green-700 border-green-200":"bg-orange-50 text-orange-700 border-orange-200"}`}>{POINTS_TYPE_LABEL[type]||type}</span>;
+}
+
+function PointsPage({token,onError,onViewOrder}:{token:string;onError:(error:unknown)=>void;onViewOrder:(id:string)=>void}){
+  const PAGE_SIZE=20;
+  const [phoneInput,setPhoneInput]=useState("");
+  const [phone,setPhone]=useState("");
+  const [typeFilter,setTypeFilter]=useState<"all"|PointsRecordType>("all");
+  const [currentPage,setCurrentPage]=useState(1);
+  const [result,setResult]=useState<PointsRecordListResult|null>(null);
+  const [loading,setLoading]=useState(true);
+
+  const load=useCallback(async()=>{
+    setLoading(true);
+    try{
+      const data=await callCloud<PointsRecordListResult>("adminListPointsRecords",{
+        sessionToken:token,
+        page:currentPage,
+        pageSize:PAGE_SIZE,
+        ...(phone?{phone}:{}),
+        ...(typeFilter==="all"?{}:{type:typeFilter}),
+      });
+      setResult(data||{list:[],total:0,hasMore:false});
+    }catch(error){onError(error);}
+    finally{setLoading(false);}
+  },[token,currentPage,phone,typeFilter,onError]);
+  useEffect(()=>{void load();},[load]);
+
+  const list=result?.list||[];
+  const total=result?.total||0;
+  const totalPages=Math.max(1,Math.ceil(total/PAGE_SIZE));
+  const nameOf=(item:PointsRecord)=>item.user?.nickName||"微信用户";
+
+  return <div className="p-4 md:p-6 space-y-4 md:space-y-5">
+    <div className="flex items-center justify-between flex-wrap gap-2">
+      <div>
+        <h1 className="text-lg md:text-xl font-semibold text-gray-900">积分管理</h1>
+        <p className="text-xs md:text-sm text-gray-400 mt-0.5">订单完成后自动发放，共 {total} 条流水。手动加减请进入「人员管理 - 用户详情」</p>
+      </div>
+      <button onClick={()=>void load()} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs text-gray-500 border border-gray-200 hover:bg-gray-50"><RefreshCw size={12} className={loading?"animate-spin":""}/>刷新</button>
+    </div>
+
+    <div className="flex flex-col sm:flex-row gap-2">
+      <form className="relative flex-1" onSubmit={(event)=>{event.preventDefault();setPhone(phoneInput.trim());setCurrentPage(1);}}>
+        <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400"/>
+        <input value={phoneInput} onChange={(event)=>setPhoneInput(event.target.value)} placeholder="按用户手机号精确查询，回车确认…" className="w-full pl-9 pr-4 py-2.5 rounded-xl border border-gray-200 text-sm bg-white outline-none focus:border-green-400"/>
+      </form>
+      <select value={typeFilter} onChange={(event)=>{setTypeFilter(event.target.value as "all"|PointsRecordType);setCurrentPage(1);}} className="px-3 py-2.5 rounded-xl border border-gray-200 text-sm bg-white outline-none focus:border-green-400">
+        <option value="all">全部类型</option>
+        {(Object.keys(POINTS_TYPE_LABEL) as PointsRecordType[]).map((value)=>
+          <option key={value} value={value}>{POINTS_TYPE_LABEL[value]}</option>)}
+      </select>
+    </div>
+
+    {/* Mobile Card List */}
+    <div className="md:hidden space-y-3">
+      {loading?<div className="bg-white rounded-xl p-8 text-center text-sm text-gray-400 border border-gray-100">加载中…</div>
+      :list.length===0?<div className="bg-white rounded-xl p-8 text-center text-sm text-gray-400 border border-gray-100">暂无积分流水</div>
+      :list.map((item)=>
+        <div key={item._id} className="bg-white rounded-xl p-4 border border-gray-100 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-gray-800 truncate">{nameOf(item)}</p>
+              <p className="text-xs text-gray-400 font-mono">{item.user?.phone||"未绑定手机"}</p>
+            </div>
+            <span className={`text-base font-semibold ${item.points>=0?"text-green-600":"text-orange-600"}`}>{formatPoints(item.points)}</span>
+          </div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <PointsTypeBadge type={item.type}/>
+            <span className="text-xs text-gray-400">余额 {Number(item.balanceAfter||0).toLocaleString("zh-CN")}</span>
+          </div>
+          <p className="text-xs text-gray-500 break-words">{item.title||"—"}{item.remark?` · ${item.remark}`:""}</p>
+          <div className="flex items-center justify-between text-xs text-gray-400">
+            <span className="font-mono truncate">{item.orderNo||""}</span>
+            <span>{formatCloudTime(item.createTime)}</span>
+          </div>
+          {item.orderId&&<button onClick={()=>onViewOrder(item.orderId as string)} className="text-xs text-green-700">查看订单 →</button>}
+        </div>
+      )}
+    </div>
+
+    {/* Desktop Table */}
+    <div className="hidden md:block bg-white rounded-xl border border-gray-100 overflow-hidden">
+      <table className="w-full">
+        <thead>
+          <tr className="bg-gray-50 border-b border-gray-100">
+            {["用户","类型","变动","变动后余额","说明","关联订单","操作人","时间"].map((title)=>
+              <th key={title} className="text-left px-4 py-3 text-xs font-medium text-gray-500 tracking-wide whitespace-nowrap">{title}</th>)}
+          </tr>
+        </thead>
+        <tbody>
+          {list.map((item)=>
+            <tr key={item._id} className="border-b border-gray-50 last:border-0 hover:bg-gray-50/50 align-top">
+              <td className="px-4 py-3">
+                <p className="text-sm text-gray-700">{nameOf(item)}</p>
+                <p className="text-xs text-gray-400 font-mono">{item.user?.phone||"—"}</p>
+              </td>
+              <td className="px-4 py-3"><PointsTypeBadge type={item.type}/></td>
+              <td className={`px-4 py-3 text-sm font-semibold whitespace-nowrap ${item.points>=0?"text-green-600":"text-orange-600"}`}>{formatPoints(item.points)}</td>
+              <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">{Number(item.balanceAfter||0).toLocaleString("zh-CN")}</td>
+              <td className="px-4 py-3 text-sm text-gray-600 max-w-[220px] break-words">{item.title||"—"}{item.remark?<span className="block text-xs text-gray-400 mt-0.5">{item.remark}</span>:null}</td>
+              <td className="px-4 py-3 text-xs font-mono text-gray-500">
+                {item.orderId
+                  ?<button onClick={()=>onViewOrder(item.orderId as string)} className="text-green-700 hover:underline">{item.orderNo||item.orderId}</button>
+                  :"—"}
+              </td>
+              <td className="px-4 py-3 text-xs text-gray-500 break-all">{item.operator||"—"}</td>
+              <td className="px-4 py-3 text-xs text-gray-400 whitespace-nowrap">{formatCloudTime(item.createTime)}</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
+      {!loading&&list.length===0&&<div className="py-12 text-center text-sm text-gray-400">暂无积分流水</div>}
+      {loading&&<div className="py-12 flex items-center justify-center gap-2 text-sm text-gray-400"><Loader size={16} className="animate-spin text-green-600"/>加载中…</div>}
+    </div>
+
+    <div className="flex items-center justify-between text-xs text-gray-400">
+      <span>第 {currentPage} / {totalPages} 页，共 {total} 条</span>
+      <div className="flex gap-2">
+        <button onClick={()=>setCurrentPage((value)=>Math.max(1,value-1))} disabled={currentPage<=1||loading} className="px-3 py-1.5 rounded-lg border border-gray-200 bg-white disabled:opacity-40">上一页</button>
+        <button onClick={()=>setCurrentPage((value)=>value+1)} disabled={!result?.hasMore||loading} className="px-3 py-1.5 rounded-lg border border-gray-200 bg-white disabled:opacity-40">下一页</button>
+      </div>
+    </div>
+  </div>;
+}
+
 // ─── User Detail Page ─────────────────────────────────────────────────────────
-function UserDetailPage({userId,token,onBack,onViewOrder,onError}:{userId:string;token:string;onBack:()=>void;onViewOrder:(id:string)=>void;onError:(error:unknown)=>void}){
+function UserDetailPage({userId,token,onBack,onViewOrder,onError,notify}:{userId:string;token:string;onBack:()=>void;onViewOrder:(id:string)=>void;onError:(error:unknown)=>void;notify:(message:{kind:"success"|"error";text:string})=>void}){
   const [data,setData]=useState<{user:UserRecord&{openid?:string};addresses:Array<{_id:string;contactName?:string;phone?:string;region?:string;detail?:string;isDefault?:boolean;createTime?:number}>;orders:Array<{_id:string;orderNo?:string;status:string;estimatePrice?:number;finalPrice?:number;appointDate?:string;appointSlot?:string;summary?:string;createTime?:number}>}|null>(null);
   const [loading,setLoading]=useState(true);
+  const [points,setPoints]=useState<UserPointsDetail|null>(null);
+  const [showAdjust,setShowAdjust]=useState(false);
+  const [adjustText,setAdjustText]=useState("");
+  const [adjustRemark,setAdjustRemark]=useState("");
+  const [adjusting,setAdjusting]=useState(false);
+  const [adjustError,setAdjustError]=useState("");
+  const loadPoints=useCallback(async()=>{
+    try{
+      const result=await callCloud<UserPointsDetail>("adminGetUserPoints",{sessionToken:token,userId});
+      setPoints(result||null);
+    }catch{
+      // 积分读取失败不影响用户详情主体展示
+      setPoints(null);
+    }
+  },[userId,token]);
   const reload=useCallback(async()=>{
     setLoading(true);
     try{
@@ -2885,6 +3106,23 @@ function UserDetailPage({userId,token,onBack,onViewOrder,onError}:{userId:string
     finally{setLoading(false);}
   },[userId,token,onError]);
   useEffect(()=>{void reload();},[reload]);
+  useEffect(()=>{void loadPoints();},[loadPoints]);
+  const submitAdjust=async()=>{
+    const value=Math.trunc(Number(adjustText));
+    if(!Number.isFinite(value)||value===0){setAdjustError("请输入非零整数，负数为扣减");return;}
+    if(!adjustRemark.trim()){setAdjustError("请填写调整原因");return;}
+    setAdjustError("");
+    setAdjusting(true);
+    try{
+      await callCloud("adminAdjustUserPoints",{sessionToken:token,userId,points:value,remark:adjustRemark.trim()});
+      notify({kind:"success",text:"积分调整成功"});
+      setShowAdjust(false);
+      setAdjustText("");
+      setAdjustRemark("");
+      await loadPoints();
+    }catch(error){onError(error);}
+    finally{setAdjusting(false);}
+  };
   if(loading)return <div className="min-h-[520px] flex items-center justify-center gap-3 text-gray-400"><Loader size={22} className="animate-spin text-green-600"/><span className="text-sm">正在读取用户详情…</span></div>;
   if(!data||!data.user)return <div className="p-6"><button onClick={onBack} className="text-sm text-green-700">← 返回人员管理</button><div className="mt-8 bg-white rounded-xl p-12 text-center text-gray-400">用户不存在或加载失败</div></div>;
   const {user,addresses,orders}=data;
@@ -2901,6 +3139,40 @@ function UserDetailPage({userId,token,onBack,onViewOrder,onError}:{userId:string
       </div>
       <div className="text-right text-xs text-gray-400"><p>注册时间</p><p className="font-mono mt-1">{formatCloudTime(user.createTime)}</p></div>
     </div>
+    <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4">
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="font-semibold text-gray-800 flex items-center gap-2"><Coins size={16} className="text-green-600"/>积分账户</h2>
+        <button onClick={()=>{setAdjustError("");setShowAdjust(true);}} className="inline-flex items-center gap-1.5 px-3 py-2 rounded-lg text-xs font-medium text-green-700 bg-green-50 hover:bg-green-100 flex-shrink-0"><Edit2 size={12}/>手动调整</button>
+      </div>
+      <div className="grid grid-cols-3 gap-3">
+        <div className="bg-gray-50 rounded-lg p-3">
+          <p className="text-xs text-gray-400">当前余额</p>
+          <p className={`text-lg font-semibold mt-1 ${(points?.points||0)<0?"text-red-600":"text-gray-900"}`}>{(points?.points||0).toLocaleString("zh-CN")}</p>
+        </div>
+        <div className="bg-gray-50 rounded-lg p-3">
+          <p className="text-xs text-gray-400">累计获得</p>
+          <p className="text-lg font-semibold text-gray-900 mt-1">{(points?.pointsTotal||0).toLocaleString("zh-CN")}</p>
+        </div>
+        <div className="bg-gray-50 rounded-lg p-3">
+          <p className="text-xs text-gray-400">累计消耗</p>
+          <p className="text-lg font-semibold text-gray-900 mt-1">{(points?.pointsUsed||0).toLocaleString("zh-CN")}</p>
+        </div>
+      </div>
+      {(points?.records||[]).length===0?<p className="text-sm text-gray-400">暂无积分流水</p>:
+      <div className="divide-y divide-gray-50">{(points?.records||[]).map((record)=>(
+        <div key={record._id} className="py-2.5 flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 flex-wrap"><PointsTypeBadge type={record.type}/><span className="text-sm text-gray-700 truncate">{record.title||"—"}</span></div>
+            {record.remark&&<p className="text-xs text-gray-400 mt-0.5 break-words">{record.remark}</p>}
+            <p className="text-xs text-gray-400 mt-0.5">{formatCloudTime(record.createTime)}{record.orderNo?` · ${record.orderNo}`:""}</p>
+          </div>
+          <div className="text-right flex-shrink-0">
+            <p className={`text-sm font-semibold ${record.points>=0?"text-green-600":"text-orange-600"}`}>{formatPoints(record.points)}</p>
+            <p className="text-xs text-gray-400 mt-0.5">余 {Number(record.balanceAfter||0).toLocaleString("zh-CN")}</p>
+          </div>
+        </div>
+      ))}</div>}
+    </section>
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-5">
       <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4">
         <h2 className="font-semibold text-gray-800 flex items-center gap-2"><MapPin size={16} className="text-green-600"/>收货地址（{addresses.length}）</h2>
@@ -2933,6 +3205,25 @@ function UserDetailPage({userId,token,onBack,onViewOrder,onError}:{userId:string
         })}</div>}
       </section>
     </div>
+    {showAdjust&&<div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={()=>!adjusting&&setShowAdjust(false)}>
+      <div className="bg-white rounded-xl w-full max-w-sm p-5 space-y-4" onClick={(event)=>event.stopPropagation()}>
+        <h3 className="font-semibold text-gray-800">手动调整积分</h3>
+        <p className="text-xs text-gray-400">当前余额 {(points?.points||0).toLocaleString("zh-CN")}，正数为增加、负数为扣减</p>
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1.5">调整值</label>
+          <input type="number" inputMode="numeric" step="1" value={adjustText} onChange={(event)=>setAdjustText(event.target.value)} placeholder="例如 1000 或 -500" className="w-full px-3 py-2 min-h-[44px] rounded-lg border border-gray-200 text-sm outline-none focus:border-green-400"/>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-500 mb-1.5">调整原因（必填）</label>
+          <textarea value={adjustRemark} onChange={(event)=>setAdjustRemark(event.target.value)} rows={3} maxLength={200} className="w-full px-3 py-2 rounded-lg border border-gray-200 text-sm outline-none focus:border-green-400 resize-none"/>
+        </div>
+        {adjustError&&<p className="text-xs text-red-500">{adjustError}</p>}
+        <div className="flex justify-end gap-2">
+          <button onClick={()=>setShowAdjust(false)} disabled={adjusting} className="px-3.5 py-2 rounded-lg text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 disabled:opacity-50">取消</button>
+          <button onClick={()=>void submitAdjust()} disabled={adjusting} className="px-3.5 py-2 rounded-lg text-xs font-medium text-white hover:opacity-90 disabled:opacity-50" style={{background:"linear-gradient(135deg,#1a7a3c,#27ae60)"}}>{adjusting?"提交中…":"确认调整"}</button>
+        </div>
+      </div>
+    </div>}
   </div>;
 }
 
@@ -2954,6 +3245,7 @@ const NAV=[
   {id:"cats"      as Page, path:"/categories", label:"品类管理", icon:Tags     },
   {id:"analytics" as Page, path:"/analytics",  label:"分析统计", icon:BarChart2},
   {id:"feedback"  as Page, path:"/feedback",   label:"投诉建议", icon:MessageSquare},
+  {id:"points"    as Page, path:"/points",     label:"积分管理", icon:Coins    },
   {id:"system"    as Page, path:"/settings",   label:"系统配置", icon:Settings },
 ];
 
@@ -2963,6 +3255,7 @@ const pageFromPath=(pathname:string):Page|null=>{
   if(pathname==="/categories"||pathname==="/cats")return "cats";
   if(pathname==="/analytics")return "analytics";
   if(pathname==="/feedback")return "feedback";
+  if(pathname==="/points")return "points";
   if(pathname==="/settings"||pathname==="/system")return "system";
   return null;
 };
@@ -3196,7 +3489,7 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
     }
     try{
       await callCloud("adminDeleteCategory",{sessionToken:token,id:item.categoryId});
-      notify({kind:"success",text:"品类节点已逻辑删除"});
+      notify({kind:"success",text:"品类节点及其子节点已停用"});
       await reloadCategories();
     }catch(error){onError(error);throw error;}
   };
@@ -3271,12 +3564,13 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
           </div>
           <div className="flex items-center gap-2 text-xs text-gray-400"><div className="w-2 h-2 rounded-full bg-green-400 animate-pulse"/><span className="hidden sm:inline">系统运行正常</span></div>
         </div>
-        {detailId?<AdminOrderDetailPage id={detailId} token={token} staff={staff} onSaveOrder={saveOrder} onAssignRecycler={assignOrderRecycler} onDeleteOrder={deleteOrder} onBack={()=>navigate("/orders")} onError={onError}/>:userDetailId?<UserDetailPage userId={userDetailId} token={token} onBack={()=>navigate("/staff")} onViewOrder={(id)=>navigate(`/orders/${encodeURIComponent(id)}`)} onError={onError}/>:loading?<div className="min-h-[420px] flex flex-col items-center justify-center text-gray-400 gap-3"><Loader size={24} className="animate-spin text-green-600"/><p className="text-sm">正在加载真实业务数据…</p></div>:<>
+        {detailId?<AdminOrderDetailPage id={detailId} token={token} staff={staff} onSaveOrder={saveOrder} onAssignRecycler={assignOrderRecycler} onDeleteOrder={deleteOrder} onBack={()=>navigate("/orders")} onError={onError} notify={notify}/>:userDetailId?<UserDetailPage userId={userDetailId} token={token} onBack={()=>navigate("/staff")} onViewOrder={(id)=>navigate(`/orders/${encodeURIComponent(id)}`)} onError={onError} notify={notify}/>:loading?<div className="min-h-[420px] flex flex-col items-center justify-center text-gray-400 gap-3"><Loader size={24} className="animate-spin text-green-600"/><p className="text-sm">正在加载真实业务数据…</p></div>:<>
           {page==="orders"    &&<OrdersPage staff={staff} groups={groups} orders={orders} onSaveOrder={saveOrder} onAssignRecycler={assignOrderRecycler} onUnsupported={unsupported} onViewOrder={(id)=>navigate(`/orders/${encodeURIComponent(id)}`)}/>}
           {page==="staff"     &&<StaffPage staff={staff} users={users} admins={admins} onSaveStaff={saveStaff} onSaveAdmin={saveAdmin} onToggleAdmin={toggleAdmin} onViewUser={(id)=>navigate(`/users/${encodeURIComponent(id)}`)}/>}
           {page==="cats"      &&<CategoryTreePage nodes={categoryTree} onSave={saveCategoryNode} onDelete={deleteCategory}/>}
           {page==="analytics" &&<AnalyticsPage orders={orders}/>} 
           {page==="feedback"  &&<FeedbackPage items={feedbacks} loading={loading} onRefresh={reloadFeedbacks}/>}
+          {page==="points"    &&<PointsPage token={token} onError={onError} onViewOrder={(id)=>navigate(`/orders/${encodeURIComponent(id)}`)}/>}
           {page==="system"    &&<SystemPage items={systemSettings} onSave={saveSystemSetting} onDelete={deleteSystemSetting}/>}
         </>}
       </main>

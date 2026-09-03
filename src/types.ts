@@ -48,6 +48,13 @@ export interface Order {
   updateTime?: number;
   completedAt?: number | null;
   canceledAt?: number | null;
+  /** 本单已发放积分（累计净值），由云函数在订单完成时写入 */
+  pointsGranted?: number;
+  /** 发放轮次序号，用于「完成→撤回→再完成」的幂等键 */
+  pointsGrantSeq?: number;
+  pointsGrantAt?: number | null;
+  /** 非空表示上次积分同步失败，后台需人工补发 */
+  pointsGrantError?: string;
 }
 
 export interface Category {
@@ -154,4 +161,46 @@ export interface FeedbackListResult {
   list: FeedbackRecord[];
   total: number;
   hasMore: boolean;
+}
+
+/** points_records 集合记录。流水是积分的唯一真相源，users.points 只是冗余快照。 */
+export type PointsRecordType =
+  | "earn_order"
+  | "adjust_order"
+  | "revoke_order"
+  | "admin_adjust"
+  | "exchange"
+  | "refund"
+  | "expire";
+
+export interface PointsRecord {
+  _id: string;
+  type: PointsRecordType;
+  /** 变动值，正为增加、负为扣减 */
+  points: number;
+  balanceAfter: number;
+  bizType?: string;
+  bizId?: string;
+  orderId?: string;
+  orderNo?: string;
+  title?: string;
+  remark?: string;
+  operator?: string;
+  createTime?: number;
+  /** 后台列表专用：脱敏后的用户标识，用于按用户筛选 */
+  userKey?: string;
+  user?: { nickName?: string; phone?: string };
+}
+
+export interface PointsRecordListResult {
+  list: PointsRecord[];
+  total: number;
+  hasMore: boolean;
+}
+
+export interface UserPointsDetail {
+  points: number;
+  pointsTotal: number;
+  pointsUsed: number;
+  records: PointsRecord[];
 }
