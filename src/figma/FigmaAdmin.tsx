@@ -2827,7 +2827,7 @@ function AdminOrderDetailPage({id,token,staff,onSaveOrder,onAssignRecycler,onDel
       {order.cancelReason&&<DetailField label="取消原因" value={order.cancelReason}/>}
     </section>
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 md:gap-5">
-      <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 order-1 lg:order-none"><div className="flex items-center justify-between mb-1"><h2 className="font-semibold text-gray-800">联系人与预约</h2><button onClick={()=>setEditing(true)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 flex-shrink-0"><Edit2 size={12}/>编辑</button></div><DetailField label="联系人" value={address.contactName}/><DetailField label="联系电话" value={address.phone}/><DetailField label="预约时间" value={[order.appointDate,order.appointSlot].filter(Boolean).join(" ")}/><DetailField label="上门地址" value={[address.region,address.detail].filter(Boolean).join(" ")}/></section>
+      <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 order-1 lg:order-none"><div className="flex items-center justify-between mb-1"><h2 className="font-semibold text-gray-800">联系人与预约</h2><button onClick={()=>setEditing(true)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 flex-shrink-0"><Edit2 size={12}/>编辑</button></div><DetailField label="联系人" value={address.contactName}/><PhoneField label="联系电话" phone={address.phone}/><DetailField label="预约时间" value={[order.appointDate,order.appointSlot].filter(Boolean).join(" ")}/><DetailField label="上门地址" value={[address.region,address.detail].filter(Boolean).join(" ")}/></section>
       <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 order-3 lg:order-none"><h2 className="font-semibold text-gray-800 mb-1">订单信息</h2><DetailField label="订单类型" value={ORDER_TYPE_LABEL[businessOrderType]}/><DetailField label="最后修改" value={formatCloudTime(order.updateTime)}/><DetailField label="用户备注" value={order.remark}/></section>
       <section className="bg-white rounded-xl border border-gray-100 p-4 md:p-5 space-y-3 md:space-y-4 order-4 lg:order-none">
         <h2 className="font-semibold text-gray-800">物品明细</h2>
@@ -2937,6 +2937,16 @@ function UserDetailPage({userId,token,onBack,onViewOrder,onError}:{userId:string
 }
 
 function DetailField({label,value}:{label:string;value?:string|null}){return <div className="flex items-start justify-between gap-4 py-2.5 border-b border-gray-50 last:border-0"><span className="text-sm text-gray-400 flex-shrink-0">{label}</span><span className="text-sm text-gray-700 text-right break-words min-w-0">{value||"—"}</span></div>;}
+
+function PhoneField({label,phone}:{label:string;phone?:string|null}){
+  const tel=(phone||"").replace(/[^\d+]/g,"");
+  return <div className="flex items-start justify-between gap-4 py-2.5 border-b border-gray-50 last:border-0">
+    <span className="text-sm text-gray-400 flex-shrink-0">{label}</span>
+    {tel
+      ?<a href={`tel:${tel}`} className="text-sm text-green-700 text-right break-all min-w-0 underline decoration-green-200 underline-offset-2 hover:text-green-800" title="点击拨号">{phone}</a>
+      :<span className="text-sm text-gray-700 text-right min-w-0">—</span>}
+  </div>;
+}
 
 const NAV=[
   {id:"orders"    as Page, path:"/orders",     label:"订单管理", icon:Package  },
