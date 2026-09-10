@@ -2,43 +2,62 @@
 
 :root {
   --font-size: 16px;
-  --background: #f0f2f5;
-  --foreground: #1a1f2e;
+
+  /* ─── Genesis 设计令牌 ─────────────────────────────────────────────────── */
+  /* 主色仅用于可交互元素：CTA、激活态、链接、focus 环 */
+  --genesis-primary: #0076de;
+  --genesis-primary-hover: #0062bb;
+  --genesis-primary-ring: rgba(0, 118, 222, 0.12);
+  --genesis-primary-glow: rgba(0, 118, 222, 0.35);
+  --genesis-neutral: #9c9c9c;
+  --genesis-text-primary: #0a0a0a;
+  --genesis-text-secondary: #6b6b6b;
+  --genesis-border: #e8e8ec;
+  --genesis-success: #10b981;
+  --genesis-warning: #f59e0b;
+  --genesis-error: #ef4444;
+  /* 静态元素不上阴影，仅 hover / focus 使用 */
+  --genesis-shadow-hover: 0 8px 30px rgba(0, 0, 0, 0.08);
+  --genesis-shadow-primary: 0 4px 12px var(--genesis-primary-glow);
+  --genesis-focus-ring: 0 0 0 3px var(--genesis-primary-ring);
+
+  --background: #fafafa;
+  --foreground: var(--genesis-text-primary);
   --card: #ffffff;
-  --card-foreground: #1a1f2e;
+  --card-foreground: var(--genesis-text-primary);
   --popover: #ffffff;
-  --popover-foreground: #1a1f2e;
-  --primary: #1a7a3c;
+  --popover-foreground: var(--genesis-text-primary);
+  --primary: var(--genesis-primary);
   --primary-foreground: #ffffff;
-  --secondary: #e8f5ed;
-  --secondary-foreground: #1a7a3c;
-  --muted: #f0f2f5;
-  --muted-foreground: #8c9ab0;
-  --accent: #d4edda;
-  --accent-foreground: #155724;
-  --destructive: #dc3545;
+  --secondary: #e6f2fd;
+  --secondary-foreground: var(--genesis-primary-hover);
+  --muted: #f4f4f6;
+  --muted-foreground: var(--genesis-text-secondary);
+  --accent: #e6f2fd;
+  --accent-foreground: var(--genesis-primary-hover);
+  --destructive: var(--genesis-error);
   --destructive-foreground: #ffffff;
-  --border: rgba(0, 0, 0, 0.08);
+  --border: var(--genesis-border);
   --input: transparent;
-  --input-background: #f8f9fb;
-  --switch-background: #cbd2db;
+  --input-background: #ffffff;
+  --switch-background: #e4e4e7;
   --font-weight-medium: 500;
   --font-weight-normal: 400;
-  --ring: #1a7a3c;
-  --chart-1: #1a7a3c;
-  --chart-2: #28a745;
-  --chart-3: #17a2b8;
-  --chart-4: #ffc107;
-  --chart-5: #fd7e14;
+  --ring: var(--genesis-primary);
+  --chart-1: var(--genesis-primary);
+  --chart-2: #66b0f2;
+  --chart-3: var(--genesis-success);
+  --chart-4: var(--genesis-warning);
+  --chart-5: var(--genesis-error);
   --radius: 0.5rem;
-  --sidebar: #1e2d1e;
-  --sidebar-foreground: #c8d8c8;
-  --sidebar-primary: #2ecc71;
+  --sidebar: #0a0a0a;
+  --sidebar-foreground: #a1a1aa;
+  --sidebar-primary: var(--genesis-primary);
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-accent: #2a3d2a;
+  --sidebar-accent: #18181b;
   --sidebar-accent-foreground: #ffffff;
   --sidebar-border: rgba(255,255,255,0.06);
-  --sidebar-ring: #2ecc71;
+  --sidebar-ring: var(--genesis-primary);
 }
 
 .dark {
@@ -79,6 +98,20 @@
 }
 
 @theme inline {
+  /* 覆写 Tailwind 默认 indigo 色阶：默认值偏紫，这里统一到主色 #0076DE 的蓝调。
+     组件里已有的 indigo-* 类名无需改动即可跟随主色。 */
+  --color-indigo-50: #e6f2fd;
+  --color-indigo-100: #cce5fb;
+  --color-indigo-200: #99cbf7;
+  --color-indigo-300: #66b0f2;
+  --color-indigo-400: #3396ee;
+  --color-indigo-500: #0076de;
+  --color-indigo-600: #0069c8;
+  --color-indigo-700: #0058a6;
+  --color-indigo-800: #004683;
+  --color-indigo-900: #003561;
+  --color-indigo-950: #00223e;
+
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -194,6 +227,79 @@
     font-size: var(--text-base);
     font-weight: var(--font-weight-normal);
     line-height: 1.5;
+  }
+}
+
+/* ─── Genesis 交互层 ───────────────────────────────────────────────────────── */
+/* 规范要求「静态元素不上阴影，阴影只用于 hover / focus」，这里统一兜底，
+   避免在 3800 行组件里逐个手写 hover / focus 类名。 */
+@layer base {
+  /* 排版：标题用紧字距，正文 15px、小字 13px（Genesis type scale） */
+  body {
+    font-size: 15px;
+    letter-spacing: -0.005em;
+  }
+
+  h1, h2, h3, h4 {
+    letter-spacing: -0.03em;
+    color: var(--genesis-text-primary);
+  }
+
+  /* 按钮 hover 上移 1px，主按钮带靖蓝辉光 */
+  button:not(:disabled) {
+    transition: transform 200ms, box-shadow 200ms, background-color 200ms,
+      border-color 200ms, color 200ms;
+  }
+
+  button:not(:disabled):hover {
+    transform: translateY(-1px);
+  }
+
+  button:not(:disabled):active {
+    transform: translateY(0);
+  }
+
+  /* MUI 组件自带交互反馈，排除全局按钮位移与 focus 环，避免菜单项/复选框跳动 */
+  .MuiButtonBase-root:not(:disabled):hover,
+  .MuiButtonBase-root:not(:disabled):active {
+    transform: none;
+  }
+
+  .MuiButtonBase-root:focus-visible,
+  .MuiSelect-select:focus-visible,
+  .MuiInputBase-input:focus-visible {
+    box-shadow: none;
+  }
+
+  /* focus 一律用 3px 靖蓝环，不用默认 outline */
+  button:focus-visible,
+  a:focus-visible,
+  [tabindex]:focus-visible {
+    outline: none;
+    box-shadow: var(--genesis-focus-ring);
+  }
+
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: none;
+  }
+
+  /* 表格行不参与按钮抬升 */
+  tr button:not(:disabled):hover {
+    transform: none;
+  }
+}
+
+@layer utilities {
+  /* 卡片 hover：抬升 2px + 柔和阴影，200ms */
+  .genesis-card {
+    transition: transform 200ms, box-shadow 200ms;
+  }
+
+  .genesis-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--genesis-shadow-hover);
   }
 }
 

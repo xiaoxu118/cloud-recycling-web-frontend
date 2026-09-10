@@ -1,4 +1,4 @@
-import type { AdminRecord, Category, Order, RecycleSettings, StaffRecord, SystemSetting, UserRecord } from "../types";
+import type { Category, Order, RecycleSettings, StaffRecord, SystemSetting, UserRecord } from "../types";
 
 let orders: Order[] = [
   {
@@ -51,12 +51,12 @@ let orders: Order[] = [
 ];
 
 let categories: Category[] = [
-  { _id: "paper", parentId: null, name: "纸类", unit: "kg", priceRef: "", sortOrder: 1, enabled: true },
-  { _id: "c1", parentId: "paper", name: "纸箱", unit: "kg", priceRef: "0.8元/kg起", sortOrder: 1, enabled: true },
-  { _id: "plastic", parentId: null, name: "塑料", unit: "kg", priceRef: "", sortOrder: 2, enabled: true },
-  { _id: "c2", parentId: "plastic", name: "塑料瓶", unit: "kg", priceRef: "1.2元/kg起", sortOrder: 1, enabled: true },
-  { _id: "appliance", parentId: null, name: "家电", unit: "件", priceRef: "", sortOrder: 3, enabled: true },
-  { _id: "c3", parentId: "appliance", name: "旧家电", unit: "件", priceRef: "现场估价", sortOrder: 1, enabled: false },
+  { _id: "paper", parentId: null, name: "纸类", unit: "kg", priceRef: "", fieldEstimate: false, sortOrder: 1, enabled: true },
+  { _id: "c1", parentId: "paper", name: "纸箱", unit: "kg", priceRef: "0.8-1.0 元/kg", fieldEstimate: false, sortOrder: 1, enabled: true },
+  { _id: "plastic", parentId: null, name: "塑料", unit: "kg", priceRef: "", fieldEstimate: false, sortOrder: 2, enabled: true },
+  { _id: "c2", parentId: "plastic", name: "塑料瓶", unit: "kg", priceRef: "1.2-1.5 元/kg", fieldEstimate: false, sortOrder: 1, enabled: true },
+  { _id: "appliance", parentId: null, name: "家电", unit: "件", priceRef: "", fieldEstimate: false, sortOrder: 3, enabled: true },
+  { _id: "c3", parentId: "appliance", name: "旧家电", unit: "件", priceRef: "现场估价", fieldEstimate: true, sortOrder: 1, enabled: false },
 ];
 
 let settings: RecycleSettings = {
@@ -73,22 +73,8 @@ let systemSettings: SystemSetting[] = [
 ];
 
 // Mock 仅用于显式的 ?mock=1 本地预览；生产环境始终调用云函数。
-let staff: StaffRecord[] = [];
+const staff: StaffRecord[] = [];
 const users: UserRecord[] = [];
-let admins: AdminRecord[] = [
-  {
-    _id: "mock-admin-1",
-    phone: "15756078813",
-    name: "管理员",
-    role: "admin",
-    enabled: true,
-    cloudbaseUid: "mock-uid-1",
-    wechatBound: true,
-    loginMethod: "phone",
-    createTime: Date.now() - 30 * 24 * 60 * 60 * 1000,
-    updateTime: Date.now(),
-  },
-];
 
 export const isDevPreview = () =>
   import.meta.env.DEV && new URLSearchParams(window.location.search).get("mock") === "1";
@@ -134,19 +120,23 @@ export async function mockCall<T>(type: string, data: Record<string, unknown>): 
     return { id: data.id } as T;
   }
   if (type === "adminSaveCategory") {
-    const category = data.category as Category;
-    if (categories.some((item) => !item.deleted && item._id !== category._id && item.name.trim().toLowerCase() === category.name.trim().toLowerCase())) {
+    const input = data.category as Category;
+    if (categories.some((item) => !item.deleted && item._id !== input._id && item.name.trim().toLowerCase() === input.name.trim().toLowerCase())) {
       throw new Error("CATEGORY_NAME_DUPLICATE");
     }
+    // 与云函数 adminSaveCategory 保持一致：priceRef 是自由文本，只做去空白 + 截断；
+    // fieldEstimate 为 true 时强制写「现场估价」。
+    const fieldEstimate = input.fieldEstimate === true;
+    const category: Category = {
+      ...input,
+      fieldEstimate,
+      priceRef: fieldEstimate ? "现场估价" : String(input.priceRef || "").trim().slice(0, 40),
+    };
     if (category._id) categories = categories.map((item) => item._id === category._id ? category : item);
     else categories = [...categories, { ...category, _id: `c${Date.now()}` }];
     return undefined as T;
   }
   if (type === "adminGetSettings") return settings as T;
-  if (type === "adminSaveSettings") {
-    settings = { ...(data.settings as RecycleSettings), key: "recycle_rules", updateTime: Date.now() };
-    return settings as T;
-  }
   if (type === "adminListSystemSettings") return systemSettings as T;
   if (type === "adminSaveSystemSetting") {
     const setting = data.setting as SystemSetting;
@@ -157,46 +147,20 @@ export async function mockCall<T>(type: string, data: Record<string, unknown>): 
     systemSettings = systemSettings.filter((item) => item._id !== data.id);
     return undefined as T;
   }
-  if (type === "adminListUsers") return users as T;
-  if (type === "adminListAdmins") return admins as T;
-  if (type === "adminSaveAdmin") {
-    const phone = String(data.phone || "").replace(/\D/g, "");
-    const id = String(data.id || "").trim();
-    const name = String(data.name || "").trim();
-    const enabled = data.enabled !== false;
-    if (!/^1[3-9]\d{9}$/.test(phone)) throw new Error("PARAM_INVALID");
-    if (id) {
-      admins = admins.map((current) => current._id === id ? {
-        ...current,
-        name,
-        enabled,
-        updateTime: Date.now(),
-      } : current);
-      return admins.find((current) => current._id === id) as T;
-    }
-    if (admins.some((current) => current.phone === phone)) throw new Error("PHONE_ALREADY_EXISTS");
-    const created: AdminRecord = {
-      _id: `mock-admin-${Date.now()}`,
-      phone,
-      name,
-      role: "admin",
-      enabled,
-      createTime: Date.now(),
-      updateTime: Date.now(),
-    };
-    admins = [created, ...admins];
-    return created as T;
-  }
-  if (type === "adminToggleAdmin") {
-    const id = String(data.id || "").trim();
-    const enabled = data.enabled !== false;
-    const target = admins.find((current) => current._id === id);
-    if (!enabled && target && target.enabled !== false) {
-      const enabledCount = admins.filter((current) => current.enabled !== false).length;
-      if (enabledCount <= 1) throw new Error("LAST_ADMIN_PROTECTED");
-    }
-    admins = admins.map((current) => current._id === id ? { ...current, enabled, updateTime: Date.now() } : current);
-    return admins.find((current) => current._id === id) as T;
+  if (type === "adminListUsers") {
+    const keyword = String(data.keyword || "").trim().toLowerCase();
+    const page = Number(data.page) || 1;
+    const pageSize = Number(data.pageSize) || 20;
+    const matched = keyword
+      ? users.filter((item) => [item.nickName, item.phone]
+          .some((value) => String(value || "").toLowerCase().includes(keyword)))
+      : users;
+    const start = (page - 1) * pageSize;
+    return {
+      list: matched.slice(start, start + pageSize),
+      total: matched.length,
+      hasMore: start + pageSize < matched.length,
+    } as T;
   }
   if (type === "adminListStaff") return staff as T;
   if (type === "adminPhoneLogin") {
@@ -208,11 +172,14 @@ export async function mockCall<T>(type: string, data: Record<string, unknown>): 
       expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
     } as T;
   }
-  if (type === "adminSaveStaff") {
-    const item = data.staff as StaffRecord;
-    if (item._id) staff = staff.map((current) => current._id === item._id ? item : current);
-    else staff = [{ ...item, _id: `staff-${Date.now()}` }, ...staff];
-    return item as T;
+  if (type === "adminListInvites") {
+    return { list: [], total: 0, hasMore: false } as T;
+  }
+  if (type === "adminInviteStat") {
+    return { totalBound: 0, l1RewardedCount: 0, l2RewardedCount: 0, monthBound: 0, limitBlockedCount: 0, totalPoints: 0 } as T;
+  }
+  if (type === "adminInvalidateInvite") {
+    return { revokedPoints: 0 } as T;
   }
   throw new Error(`本地预览未实现接口：${type}`);
 }
