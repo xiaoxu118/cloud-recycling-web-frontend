@@ -1,5 +1,26 @@
 export type OrderStatus = "submitted" | "processing" | "completed" | "canceled";
 
+/** adminCreateLoginTicket 响应：小程序码 + web 端轮询凭据（webNonce 只下发给创建票据的浏览器） */
+export interface LoginTicketCreateResult {
+  ticket: string;
+  webNonce: string;
+  page: string;
+  path: string;
+  expiresAt: number;
+  qrFileID?: string;
+  qrUrl?: string;
+  /** wxacode 生成失败时后端附带的原因码，此时 qrUrl 为空 */
+  qrError?: string;
+  qrErrorMsg?: string;
+}
+
+/** adminCheckLoginTicket 响应：pending 只带 status，confirmed 附带可直接使用的登录态 */
+export interface LoginTicketCheckResult {
+  status: "pending" | "confirmed";
+  sessionToken?: string;
+  adminName?: string;
+}
+
 export interface AddressSnapshot {
   contactName?: string;
   phone?: string;

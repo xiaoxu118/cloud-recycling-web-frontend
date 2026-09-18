@@ -4,7 +4,7 @@ import TextField from "@mui/material/TextField";
 import { callCloud, CloudError, getCloudBaseApp, initCloud } from "./api/cloud";
 import { isDevPreview } from "./api/mock";
 import FigmaAdminApp from "./figma/FigmaAdmin";
-import type { OrderStatus } from "./types";
+import type { LoginTicketCheckResult, LoginTicketCreateResult, OrderStatus } from "./types";
 
 
 const ERROR_TEXT: Record<string, string> = {
@@ -14,6 +14,7 @@ const ERROR_TEXT: Record<string, string> = {
   PHONE_NOT_IN_WHITELIST: "当前手机号不在管理员白名单",
   PHONE_BOUND_TO_OTHER_ACCOUNT: "该手机号已绑定其他账号，请联系管理员解绑",
   LOGIN_TICKET_EXPIRED: "登录码已过期，请刷新",
+  WXACODE_CREATE_FAILED: "登录二维码生成失败，可稍后重试或改用短信登录",
   TRANSFER_PROOF_REQUIRED: "完成订单前请上传打款凭证",
   FINAL_PRICE_REQUIRED: "完成订单前请填写最终金额",
   ACTUAL_QUANTITY_REQUIRED: "完成订单前请填写实际重量或件数",
@@ -197,6 +198,8 @@ function App() {
 }
 
 function LoginPage({ onSuccess }: { onSuccess: (auth: AuthState) => void }) {
+  // 默认扫码登录：不用等短信；票据链路失败时随时可切回短信
+  const [mode, setMode] = useState<"qr" | "sms">("qr");
   const [phone, setPhone] = useState("");
   const [code, setCode] = useState("");
   const [sendingCode, setSendingCode] = useState(false);
@@ -297,14 +300,115 @@ function LoginPage({ onSuccess }: { onSuccess: (auth: AuthState) => void }) {
           <span className="login-brand-tag">管理后台</span>
         </div>
         <h1 className="login-title">管理员登录</h1>
+        <div className="login-tabs" role="tablist" aria-label="登录方式">
+          <button type="button" role="tab" aria-selected={mode === "qr"} className={mode === "qr" ? "active" : ""} onClick={() => setMode("qr")}>扫码登录</button>
+          <button type="button" role="tab" aria-selected={mode === "sms"} className={mode === "sms" ? "active" : ""} onClick={() => setMode("sms")}>短信登录</button>
+        </div>
+        {mode === "qr" && <QrLoginPanel onSuccess={onSuccess} />}
+        {mode === "sms" && (
         <form className="phone-login-form" onSubmit={verifyAndLogin}>
           <TextField label="手机号" fullWidth autoComplete="tel" value={phone} onChange={(event) => setPhone(event.target.value.replace(/\D/g, "").slice(0, 11))} placeholder="请输入 11 位手机号" slotProps={{ htmlInput: { inputMode: "numeric", maxLength: 11 } }} />
           <div className="phone-code-input"><TextField label="验证码" value={code} onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))} placeholder="短信验证码" slotProps={{ htmlInput: { inputMode: "numeric", maxLength: 6 } }} sx={{ flex: "1 1 160px", minWidth: 160 }} /><button type="button" className="button secondary phone-code-btn" disabled={sendingCode || countdown > 0 || !isPhoneValid} onClick={() => void sendCode()}>{sendingCode ? "发送中…" : countdown > 0 ? `${countdown}s 后重发` : "发送验证码"}</button></div>
           <div className="phone-error-slot" aria-live="polite">{phoneError && <p className="phone-error" role="alert">{phoneError}</p>}</div>
           <button className="button primary full" type="submit" disabled={verifying || sendingCode}>{verifying ? "验证中…" : "登录"}</button>
         </form>
+        )}
       </section>
     </main>
+  );
+}
+
+// 扫码登录面板：创建票据 → 展示小程序码 → 轮询 adminCheckLoginTicket。
+// webNonce 是「只有创建票据的浏览器才持有」的凭据，确认后凭它换 sessionToken。
+function QrLoginPanel({ onSuccess }: { onSuccess: (auth: AuthState) => void }) {
+  const [ticket, setTicket] = useState<LoginTicketCreateResult | null>(null);
+  const [phase, setPhase] = useState<"loading" | "pending" | "confirmed" | "expired" | "error">("loading");
+  const [errorText, setErrorText] = useState("");
+  const [remainSec, setRemainSec] = useState(0);
+
+  const createTicket = useCallback(async () => {
+    setPhase("loading");
+    setErrorText("");
+    try {
+      const result = await callCloud<LoginTicketCreateResult>("adminCreateLoginTicket", {});
+      if (!result?.qrUrl) {
+        // 后端生成小程序码失败（如小程序未发布 / openapi 权限缺失）时 qrUrl 为空并附带原因码
+        throw new CloudError(result?.qrError || "WXACODE_CREATE_FAILED", result);
+      }
+      setTicket(result);
+      setRemainSec(Math.max(0, Math.round((result.expiresAt - Date.now()) / 1000)));
+      setPhase("pending");
+    } catch (error) {
+      setTicket(null);
+      setPhase("error");
+      setErrorText(getErrorText(error));
+    }
+  }, []);
+
+  useEffect(() => {
+    void createTicket();
+  }, [createTicket]);
+
+  // 剩余秒数倒计时，归零即本地判定过期，避免继续空轮询
+  useEffect(() => {
+    if (phase !== "pending") return;
+    const timer = window.setInterval(() => setRemainSec((value) => (value > 0 ? value - 1 : 0)), 1000);
+    return () => window.clearInterval(timer);
+  }, [phase]);
+
+  useEffect(() => {
+    if (phase === "pending" && remainSec === 0) setPhase("expired");
+  }, [phase, remainSec]);
+
+  useEffect(() => {
+    if (phase !== "pending" || !ticket) return;
+    let stopped = false;
+    const timer = window.setInterval(() => {
+      if (stopped) return;
+      void (async () => {
+        try {
+          const result = await callCloud<LoginTicketCheckResult>("adminCheckLoginTicket", {
+            ticket: ticket.ticket,
+            webNonce: ticket.webNonce,
+          });
+          if (stopped) return;
+          if (result?.status === "confirmed" && result.sessionToken) {
+            setPhase("confirmed");
+            onSuccess({ token: result.sessionToken, adminName: result.adminName || "管理员" });
+          }
+        } catch (error) {
+          if (stopped) return;
+          if (error instanceof CloudError && error.code === "LOGIN_TICKET_EXPIRED") {
+            setPhase("expired");
+            return;
+          }
+          // 网络抖动等瞬时错误：静默跳过，等下一轮
+        }
+      })();
+    }, 2500);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [phase, ticket, onSuccess]);
+
+  return (
+    <div className="qr-login-panel">
+      <div className="qr-box">
+        {phase === "loading" && <p className="qr-placeholder-text">正在生成二维码…</p>}
+        {phase === "pending" && ticket && <img className="qr-image" src={ticket.qrUrl} alt="管理员登录二维码" />}
+        {phase === "confirmed" && <p className="qr-placeholder-text">确认成功，正在进入管理后台…</p>}
+        {phase === "expired" && <p className="qr-placeholder-text">二维码已过期</p>}
+        {phase === "error" && <p className="qr-placeholder-text">{errorText}</p>}
+      </div>
+      {/* 提示行与按钮区在所有阶段都占位，避免 loading → 出码时面板高度跳动导致误点 */}
+      <p className="qr-hint">{phase === "pending" ? "请使用微信扫码，在小程序中确认登录" : "\u00A0"}</p>
+      <p className="qr-meta">{phase === "pending" ? `二维码 ${remainSec}s 后失效` : "\u00A0"}</p>
+      <div className="qr-actions">
+        {phase === "pending" && <button type="button" className="button secondary" onClick={() => void createTicket()}>看不清？换一个</button>}
+        {(phase === "expired" || phase === "error") && <button type="button" className="button secondary" onClick={() => void createTicket()}>刷新二维码</button>}
+      </div>
+    </div>
   );
 }
 function FullscreenLoading({ text, compact = false }: { text: string; compact?: boolean }) { return <div className={`loading-screen ${compact ? "compact" : ""}`}><span className="spinner" /><p>{text}</p></div>; }
