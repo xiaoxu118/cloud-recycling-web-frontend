@@ -1,9 +1,10 @@
 import { FormEvent, useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import TextField from "@mui/material/TextField";
-import { callCloud, CloudError, getCloudBaseApp, initCloud } from "./api/cloud";
+import { callCloud, CloudError, ensureAnonymousSession, getCloudBaseApp, initCloud, signOutAnonymousIfExists } from "./api/cloud";
 import { isDevPreview } from "./api/mock";
 import FigmaAdminApp from "./figma/FigmaAdmin";
+import { adminConfig } from "./config/admin";
 import type { LoginTicketCheckResult, LoginTicketCreateResult, OrderStatus } from "./types";
 
 
@@ -15,6 +16,7 @@ const ERROR_TEXT: Record<string, string> = {
   PHONE_BOUND_TO_OTHER_ACCOUNT: "该手机号已绑定其他账号，请联系管理员解绑",
   LOGIN_TICKET_EXPIRED: "登录码已过期，请刷新",
   WXACODE_CREATE_FAILED: "登录二维码生成失败，可稍后重试或改用短信登录",
+  RATE_LIMITED: "二维码生成过于频繁，请稍后再试",
   TRANSFER_PROOF_REQUIRED: "完成订单前请上传打款凭证",
   FINAL_PRICE_REQUIRED: "完成订单前请填写最终金额",
   ACTUAL_QUANTITY_REQUIRED: "完成订单前请填写实际重量或件数",
@@ -225,6 +227,9 @@ function LoginPage({ onSuccess }: { onSuccess: (auth: AuthState) => void }) {
     }
     setSendingCode(true);
     try {
+      // 若扫码 tab 曾建立匿名会话，先登出：否则 signInWithOtp 会升级匿名用户，
+      // 拿到的 uid 与历史手机号登录不一致，云函数会按「手机号已绑定其他账号」拒绝
+      await signOutAnonymousIfExists();
       // 复用 initCloud() 已经创建好的 SDK app，避免重复 init 触发新的匿名会话。
       const app = getCloudBaseApp();
       const auth = app && app.auth;
@@ -304,7 +309,7 @@ function LoginPage({ onSuccess }: { onSuccess: (auth: AuthState) => void }) {
           <button type="button" role="tab" aria-selected={mode === "qr"} className={mode === "qr" ? "active" : ""} onClick={() => setMode("qr")}>扫码登录</button>
           <button type="button" role="tab" aria-selected={mode === "sms"} className={mode === "sms" ? "active" : ""} onClick={() => setMode("sms")}>短信登录</button>
         </div>
-        {mode === "qr" && <QrLoginPanel onSuccess={onSuccess} />}
+        {mode === "qr" && <QrLoginPanel onSuccess={onSuccess} onSwitchToSms={() => setMode("sms")} />}
         {mode === "sms" && (
         <form className="phone-login-form" onSubmit={verifyAndLogin}>
           <TextField label="手机号" fullWidth autoComplete="tel" value={phone} onChange={(event) => setPhone(event.target.value.replace(/\D/g, "").slice(0, 11))} placeholder="请输入 11 位手机号" slotProps={{ htmlInput: { inputMode: "numeric", maxLength: 11 } }} />
@@ -320,7 +325,7 @@ function LoginPage({ onSuccess }: { onSuccess: (auth: AuthState) => void }) {
 
 // 扫码登录面板：创建票据 → 展示小程序码 → 轮询 adminCheckLoginTicket。
 // webNonce 是「只有创建票据的浏览器才持有」的凭据，确认后凭它换 sessionToken。
-function QrLoginPanel({ onSuccess }: { onSuccess: (auth: AuthState) => void }) {
+function QrLoginPanel({ onSuccess, onSwitchToSms }: { onSuccess: (auth: AuthState) => void; onSwitchToSms: () => void }) {
   const [ticket, setTicket] = useState<LoginTicketCreateResult | null>(null);
   const [phase, setPhase] = useState<"loading" | "pending" | "confirmed" | "expired" | "error">("loading");
   const [errorText, setErrorText] = useState("");
@@ -330,7 +335,13 @@ function QrLoginPanel({ onSuccess }: { onSuccess: (auth: AuthState) => void }) {
     setPhase("loading");
     setErrorText("");
     try {
-      const result = await callCloud<LoginTicketCreateResult>("adminCreateLoginTicket", {});
+      // 云函数安全规则要求至少一种登录态；扫码链路在拿到 admin session 前用匿名身份
+      await ensureAnonymousSession();
+      const result = await callCloud<LoginTicketCreateResult>(
+        "adminCreateLoginTicket",
+        {},
+        adminConfig.loginFunctionName,
+      );
       if (!result?.qrUrl) {
         // 后端生成小程序码失败（如小程序未发布 / openapi 权限缺失）时 qrUrl 为空并附带原因码
         throw new CloudError(result?.qrError || "WXACODE_CREATE_FAILED", result);
@@ -367,10 +378,14 @@ function QrLoginPanel({ onSuccess }: { onSuccess: (auth: AuthState) => void }) {
       if (stopped) return;
       void (async () => {
         try {
-          const result = await callCloud<LoginTicketCheckResult>("adminCheckLoginTicket", {
-            ticket: ticket.ticket,
-            webNonce: ticket.webNonce,
-          });
+          const result = await callCloud<LoginTicketCheckResult>(
+            "adminCheckLoginTicket",
+            {
+              ticket: ticket.ticket,
+              webNonce: ticket.webNonce,
+            },
+            adminConfig.loginFunctionName,
+          );
           if (stopped) return;
           if (result?.status === "confirmed" && result.sessionToken) {
             setPhase("confirmed");
@@ -406,7 +421,12 @@ function QrLoginPanel({ onSuccess }: { onSuccess: (auth: AuthState) => void }) {
       <p className="qr-meta">{phase === "pending" ? `二维码 ${remainSec}s 后失效` : "\u00A0"}</p>
       <div className="qr-actions">
         {phase === "pending" && <button type="button" className="button secondary" onClick={() => void createTicket()}>看不清？换一个</button>}
-        {(phase === "expired" || phase === "error") && <button type="button" className="button secondary" onClick={() => void createTicket()}>刷新二维码</button>}
+        {(phase === "expired" || phase === "error") && (
+          <>
+            <button type="button" className="button secondary" onClick={() => void createTicket()}>刷新二维码</button>
+            {phase === "error" && <button type="button" className="button secondary" onClick={onSwitchToSms}>改用短信登录</button>}
+          </>
+        )}
       </div>
     </div>
   );

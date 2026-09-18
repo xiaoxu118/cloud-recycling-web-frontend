@@ -27,17 +27,53 @@ export async function initCloud() {
       hint: "请在 .env.* / public/config.js 中配置 VITE_CLOUDBASE_ENV，或访问 ?env=xxx 临时指定",
     });
   }
-  // 不传 accessKey、不做匿名登录。
+  // 不传 accessKey、不做自动匿名登录。
   // 原因：accessKey 会触发 SDK 自动创建匿名会话、并且 signInWithOtp() 会升级当前匿名用户，
   // 导致获取到的 uid 不是真实手机号用户的。手机号验证码登录是真实身份验证，不需要匿名先行。
+  // 扫码登录面板会显式 signInAnonymously()（见 ensureAnonymousSession），并在短信发送前
+  // signOut 清掉匿名会话，保证两条链路互不污染。
   app = cloudbase.init({ env: adminConfig.env });
 }
 
-export async function callCloud<T>(type: string, data: Record<string, unknown> = {}) {
+// 云函数调用要求至少存在一种登录态（安全规则 auth != null）。
+// 扫码登录在拿到管理员 session 前没有任何身份，这里显式建立匿名会话；
+// 已有登录态（匿名或手机号）则直接复用。
+export async function ensureAnonymousSession() {
+  if (isDevPreview()) return;
+  const current = app && app.auth && app.auth();
+  if (!current) throw new CloudError("CLOUDBASE_NOT_READY");
+  const state = await current.getLoginState();
+  // ILoginState 只声明了 user；有 user 即视为已登录
+  if (state && state.user) return;
+  await current.signInAnonymously();
+}
+
+// 短信验证码登录前调用：若当前挂着匿名会话，先登出。
+// 否则 signInWithOtp 会把匿名用户升级为手机号用户，uid 与历史登录不一致，
+// 云函数会按 PHONE_BOUND_TO_OTHER_ACCOUNT 拒绝。匿名 user 的 uid 以 "anon-" 开头。
+export async function signOutAnonymousIfExists() {
+  if (isDevPreview()) return;
+  const current = app && app.auth && app.auth();
+  if (!current) return;
+  try {
+    const state = await current.getLoginState();
+    if (state && state.user && String(state.user.uid || "").startsWith("anon-")) {
+      await current.signOut();
+    }
+  } catch {
+    // 查询登录态失败不阻塞发码
+  }
+}
+
+export async function callCloud<T>(
+  type: string,
+  data: Record<string, unknown> = {},
+  functionName?: string,
+) {
   if (isDevPreview()) return mockCall<T>(type, data);
   if (!app) throw new CloudError("CLOUDBASE_NOT_READY");
   const response = await app.callFunction({
-    name: adminConfig.functionName || "quickstartFunctions",
+    name: functionName || adminConfig.functionName || "quickstartFunctions",
     data: { type, ...data },
   });
   const result = response.result as CloudFunctionResult<T> | undefined;
