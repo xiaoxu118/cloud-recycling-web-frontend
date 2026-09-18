@@ -57,3 +57,6 @@ temp/
 # 本地设计导出与视觉验收截图 + 内部设计/计划文档（不纳入版本控制）
 figma-ui-export/
 docs/
+
+# LLVM/运行时覆盖率数据
+*.profraw

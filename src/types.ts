@@ -57,6 +57,12 @@ export interface Order {
   pointsGrantAt?: number | null;
   /** 非空表示上次积分同步失败，后台需人工补发 */
   pointsGrantError?: string;
+  /** 下单用户快照，由云函数 adminGetOrderDetail 按 _openid 查 users 集合返回 */
+  userSnapshot?: {
+    userId: string;
+    nickName: string;
+    phone: string;
+  } | null;
 }
 
 export interface Category {
@@ -75,6 +81,8 @@ export interface Category {
   sortOrder: number;
   enabled: boolean;
   showOnHome?: boolean;
+  /** 一级品类的回收注意事项，用户选择该分类时弹出提示 */
+  tips?: string;
   deleted?: boolean;
   deletedAt?: number;
 }

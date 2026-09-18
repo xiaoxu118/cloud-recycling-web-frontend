@@ -26,6 +26,7 @@ import TableCell from "@mui/material/TableCell";
 import TableContainer from "@mui/material/TableContainer";
 import TableHead from "@mui/material/TableHead";
 import TableRow from "@mui/material/TableRow";
+import TableSortLabel from "@mui/material/TableSortLabel";
 import Paper from "@mui/material/Paper";
 import Chip from "@mui/material/Chip";
 import Typography from "@mui/material/Typography";
@@ -99,6 +100,7 @@ interface RecycleItem {
   priceRef?: string;
   categoryId?: string; parentId?: string | null; sortOrder?: number; showOnHome?: boolean;
   minVisitKg?: number;
+  tips?: string;
 }
 interface CategoryNode extends RecycleItem {
   parentId: string | null;
@@ -140,6 +142,15 @@ interface AuthState {
   permissions: Set<string>;
   has: (permission?: string) => boolean;
 }
+
+// 判断错误是否属于"集合未建 / 接口未部署 / SDK 未就绪"这类需要初始化的基础设施错误。
+// 鉴权失败（ADMIN_SESSION_REQUIRED / EXPIRED / NO_PERMISSION）与参数错误不应被吞成初始化提示，
+// 必须走 onError 让全局处理（登出或 toast），否则会把"没权限"误导成"需要初始化"。
+const INIT_LIKE_ERROR_CODES = new Set(["DB_ERROR", "EMPTY_RESPONSE", "CLOUDBASE_NOT_READY", "CALL_FAILED"]);
+const isInitLikeError = (error: unknown): boolean => {
+  const code = (error as { code?: string } | null | undefined)?.code;
+  return Boolean(code) && INIT_LIKE_ERROR_CODES.has(code as string);
+};
 
 const AuthContext = createContext<AuthState>({
   ready: false,
@@ -300,6 +311,7 @@ const categoryToItem = (item: CloudCategory): RecycleItem => {
     enabled: item.enabled,
     showOnHome: !item.parentId && item.showOnHome !== false,
     minVisitKg: item.minVisitKg,
+    tips: item.tips || "",
   };
 };
 
@@ -1073,6 +1085,11 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
 }
 
 // ─── 用户管理（C 端微信用户，只读） ─────────────────────────────────────────────
+// TableSortLabel 默认隐藏未激活的箭头，这里强制始终可见（opacity 0.4）
+const SORT_LABEL_SX = {
+  "& .MuiTableSortLabel-icon": { opacity: 0.4, "&.Mui-disabled": { opacity: 0.4 } },
+};
+
 // 用户列表走服务端分页：users 集合会随注册量持续增长，一次性全量拉取会被云函数
 // 的单次查询上限截断（历史上是 50 条），导致靠后的用户在管理端既看不到也搜不到。
 function UsersPage({ token,onViewUser,onError }:{
@@ -1088,6 +1105,10 @@ function UsersPage({ token,onViewUser,onError }:{
   const [keyword,setKeyword]=useState("");
   // 输入框实时回显，实际查询用防抖后的值，避免每个字符都打一次云函数
   const [searchInput,setSearchInput]=useState("");
+  // 排序字段与方向：与云函数 USER_SORT_FIELDS 白名单对齐，只允许这三个值
+  // 默认按 lastLoginTime 排序：updateTime 会被后台积分发放等操作污染，不代表用户真实活跃
+  const [sortBy,setSortBy]=useState<"createTime"|"lastLoginTime"|"updateTime">("lastLoginTime");
+  const [sortOrder,setSortOrder]=useState<"asc"|"desc">("desc");
 
   useEffect(()=>{
     const timer=setTimeout(()=>{setKeyword(searchInput);setCurrentPage(1);},400);
@@ -1098,13 +1119,13 @@ function UsersPage({ token,onViewUser,onError }:{
     setLoading(true);
     try{
       const result=await callCloud<UserListResult>("adminListUsers",{
-        sessionToken:token,page:currentPage,pageSize:PAGE_SIZE,keyword,
+        sessionToken:token,page:currentPage,pageSize:PAGE_SIZE,keyword,sortBy,sortOrder,
       });
       setUsers(result?.list||[]);
       setTotal(result?.total||0);
     }catch(error){setUsers([]);setTotal(0);onError(error);}
     finally{setLoading(false);}
-  },[token,currentPage,keyword,onError]);
+  },[token,currentPage,keyword,sortBy,sortOrder,onError]);
 
   useEffect(()=>{void load();},[load]);
 
@@ -1135,9 +1156,25 @@ function UsersPage({ token,onViewUser,onError }:{
         <Table size="small">
           <TableHead>
             <TableRow sx={{bgcolor:"#FAFAFA"}}>
-              {["用户","联系电话","微信状态","订单数","地址数","积分","创建时间","最近活跃"].map(h=>(
+              {["用户","联系电话","微信状态","订单数","地址数","积分"].map(h=>(
                 <TableCell key={h} sx={{fontWeight:600,color:"#6B6B6B"}}>{h}</TableCell>
               ))}
+              <TableCell sx={{fontWeight:600,color:"#6B6B6B"}} sortDirection={sortBy==="createTime"?sortOrder:false}>
+                <TableSortLabel
+                  active={sortBy==="createTime"}
+                  direction={sortBy==="createTime"?sortOrder:"desc"}
+                  onClick={()=>{setSortBy("createTime");setSortOrder(sortBy==="createTime"&&sortOrder==="desc"?"asc":"desc");setCurrentPage(1);}}
+                  sx={SORT_LABEL_SX}
+                >创建时间</TableSortLabel>
+              </TableCell>
+              <TableCell sx={{fontWeight:600,color:"#6B6B6B"}} sortDirection={sortBy==="lastLoginTime"?sortOrder:false}>
+                <TableSortLabel
+                  active={sortBy==="lastLoginTime"}
+                  direction={sortBy==="lastLoginTime"?sortOrder:"desc"}
+                  onClick={()=>{setSortBy("lastLoginTime");setSortOrder(sortBy==="lastLoginTime"&&sortOrder==="desc"?"asc":"desc");setCurrentPage(1);}}
+                  sx={SORT_LABEL_SX}
+                >最近活跃</TableSortLabel>
+              </TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
@@ -1157,7 +1194,7 @@ function UsersPage({ token,onViewUser,onError }:{
                 <TableCell><Typography variant="body2">{user.addressCount}</Typography></TableCell>
                 <TableCell><Typography variant="body2">{(user as UserRecord&{points?:number}).points??0}</Typography></TableCell>
                 <TableCell><Typography variant="caption" color="text.secondary" sx={{fontFamily:"monospace"}}>{formatCloudTime(user.createTime)}</Typography></TableCell>
-                <TableCell><Typography variant="caption" color="text.secondary">{formatCloudTime(user.lastLoginTime||user.updateTime)}</Typography></TableCell>
+                <TableCell><Typography variant="caption" color="text.secondary">{formatCloudTime(user.lastLoginTime)}</Typography></TableCell>
               </TableRow>
             ))}
             {loading&&users.length===0&&<TableRow><TableCell colSpan={8} align="center" sx={{py:8}}>
@@ -1224,10 +1261,15 @@ function MembersPage({ token,roles,onSaveMember,onToggleStatus,onError }:{
       setData(result||null);
       setNeedInit(false);
     }catch(error){
-      // 集合未创建 / 接口未部署：提示先执行初始化，不弹全局错误
-      setNeedInit(true);
-      setData(null);
-      void error;
+      // 仅在确属"集合未建 / 接口未部署 / SDK 未就绪"时显示初始化引导，
+      // 鉴权失败 / 无权限 / 参数错误一律走全局 onError，避免把"没权限"误报成"需要初始化"。
+      if(isInitLikeError(error)){
+        setNeedInit(true);
+        setData(null);
+      }else{
+        onError(error);
+        setData(null);
+      }
     }finally{setLoading(false);}
   },[token,keyword,roleFilter,statusFilter,storeFilter]);
 
@@ -1572,10 +1614,15 @@ function StaffRecruitsPage({ token,onError,notify }:{
       setList(all);
       setNeedInit(false);
     }catch(error){
-      // 集合未创建 / 接口未部署：给出提示而不弹全局错误
-      setNeedInit(true);
-      setList([]);
-      void error;
+      // 仅在确属"集合未建 / 接口未部署 / SDK 未就绪"时显示初始化引导，
+      // 鉴权失败 / 无权限 / 参数错误一律走全局 onError。
+      if(isInitLikeError(error)){
+        setNeedInit(true);
+        setList([]);
+      }else{
+        onError(error);
+        setList([]);
+      }
     }finally{setLoading(false);}
   },[token,keyword,statusFilter]);
 
@@ -1993,6 +2040,7 @@ function CategoryNodeModal({nodes,initial,defaultParentId,onSave,onClose,onDelet
     enabled:initial?.enabled??true,
     showOnHome:initial?.showOnHome??true,
     minVisitKg: typeof initial?.minVisitKg==="number" ? String(initial.minVisitKg) : "",
+    tips: initial?.tips||"",
   });
   const [error,setError]=useState("");
   const [saving,setSaving]=useState(false);
@@ -2020,6 +2068,7 @@ function CategoryNodeModal({nodes,initial,defaultParentId,onSave,onClose,onDelet
         enabled:form.enabled,
         showOnHome:form.parentId?false:form.showOnHome,
         minVisitKg: isRoot||form.minVisitKg.trim()==="" ? undefined : Number(form.minVisitKg),
+        tips: isRoot?form.tips.trim():"",
       });
       onClose();
     }finally{setSaving(false);}
@@ -2067,6 +2116,7 @@ function CategoryNodeModal({nodes,initial,defaultParentId,onSave,onClose,onDelet
           </>}
         </div>
         {form.parentId&&<div className="flex items-center justify-between px-3 py-2 bg-amber-50 rounded-xl"><div><p className="text-sm font-medium text-amber-800">现场估价</p><p className="text-xs text-amber-600">该节点不设置固定参考价格</p></div><button onClick={()=>setForm({...form,fieldEstimate:!form.fieldEstimate})}>{form.fieldEstimate?<ToggleRight size={26} className="text-amber-500"/>:<ToggleLeft size={26} className="text-gray-300"/>}</button></div>}
+        {!form.parentId&&<TextField label="回收注意事项" fullWidth multiline minRows={3} maxRows={6} value={form.tips} onChange={(event)=>setForm({...form,tips:event.target.value})} placeholder="如：纸板类物品请拆好整理好，不能掺水、掺杂物。用户选择该分类时会弹出此提示。" helperText="仅一级分类可填，留空则不弹提示"/>}
         {!form.parentId&&<div className="flex items-center justify-between px-3 py-2 bg-indigo-50 rounded-xl"><div><p className="text-sm font-medium text-indigo-800">首页展示</p><p className="text-xs text-indigo-600">首页最多展示排序靠前的 4 个一级类别</p></div><button onClick={()=>setForm({...form,showOnHome:!form.showOnHome})}>{form.showOnHome?<ToggleRight size={26} className="text-indigo-500"/>:<ToggleLeft size={26} className="text-gray-300"/>}</button></div>}
         <div className="flex items-center justify-between px-3 py-2 bg-gray-50 rounded-xl"><div><p className="text-sm font-medium text-gray-700">启用节点</p><p className="text-xs text-gray-400">停用后该节点不在小程序展示</p></div><button onClick={()=>setForm({...form,enabled:!form.enabled})}>{form.enabled?<ToggleRight size={26} className="text-indigo-500"/>:<ToggleLeft size={26} className="text-gray-300"/>}</button></div>
       </div>
@@ -2765,7 +2815,7 @@ function AnalyticsPage({ orders }:{ orders:Order[] }) {
 }
 
 // ─── Main Layout ──────────────────────────────────────────────────────────────
-function AdminOrderDetailPage({id,token,staff,onSaveOrder,onAssignRecycler,onDeleteOrder,onBack,onError,notify}:{id:string;token:string;staff:Staff[];onSaveOrder:(order:Order)=>Promise<void>;onAssignRecycler:(order:Order,person:Staff)=>Promise<void>;onDeleteOrder:(docId:string)=>Promise<void>;onBack:()=>void;onError:(error:unknown)=>void;notify:(message:{kind:"success"|"error";text:string})=>void}){
+function AdminOrderDetailPage({id,token,staff,onSaveOrder,onAssignRecycler,onDeleteOrder,onBack,onError,notify,onViewUser}:{id:string;token:string;staff:Staff[];onSaveOrder:(order:Order)=>Promise<void>;onAssignRecycler:(order:Order,person:Staff)=>Promise<void>;onDeleteOrder:(docId:string)=>Promise<void>;onBack:()=>void;onError:(error:unknown)=>void;notify:(message:{kind:"success"|"error";text:string})=>void;onViewUser?:(id:string)=>void}){
   const [editing,setEditing]=useState(false);
   const [showDeleteConfirm,setShowDeleteConfirm]=useState(false);
   const [deleting,setDeleting]=useState(false);
@@ -2860,6 +2910,11 @@ function AdminOrderDetailPage({id,token,staff,onSaveOrder,onAssignRecycler,onDel
             </div>
             <p className="text-sm text-gray-700 font-mono mt-2 break-all">{order.orderNo}</p>
             <p className="text-[11px] text-gray-400 mt-1">下单 {formatCloudTime(order.createTime)} · 修改 {formatCloudTime(order.updateTime)}</p>
+            {order.userSnapshot&&(
+              <button onClick={()=>onViewUser?.(order.userSnapshot!.userId)} className="mt-1.5 inline-flex items-center gap-1 text-[11px] text-indigo-700 hover:underline">
+                <User size={11}/>下单用户：{order.userSnapshot.nickName||"微信用户"} · {order.userSnapshot.phone||"未绑定"}
+              </button>
+            )}
           </div>
           <button onClick={()=>setEditing(true)} className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium text-gray-600 bg-gray-100 hover:bg-gray-200 flex-shrink-0"><Edit2 size={12}/>编辑</button>
         </div>
@@ -3764,11 +3819,17 @@ function InvitesPage({token,onError,notify}:{
       setStat(summary||null);
       setNeedInit(false);
     }catch(error){
-      // 集合未创建 / 接口未部署：给出提示而不弹全局错误
-      setNeedInit(true);
-      setResult(null);
-      setStat(null);
-      void error;
+      // 仅在确属"集合未建 / 接口未部署 / SDK 未就绪"时显示初始化引导，
+      // 鉴权失败 / 无权限 / 参数错误一律走全局 onError。
+      if(isInitLikeError(error)){
+        setNeedInit(true);
+        setResult(null);
+        setStat(null);
+      }else{
+        onError(error);
+        setResult(null);
+        setStat(null);
+      }
     }finally{setLoading(false);}
   },[token,currentPage,inviterPhone,statusFilter]);
 
@@ -4339,6 +4400,8 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
       enabled:item.enabled,
       showOnHome:item.parentId?false:item.showOnHome!==false,
       minVisitKg: typeof item.minVisitKg==="number"?item.minVisitKg:undefined,
+      // 一级品类的回收注意事项，云端会对二级品类强制清空
+      tips:item.tips||"",
     };
     try{
       await callCloud("adminSaveCategory",{sessionToken:token,category});
@@ -4454,7 +4517,7 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
           </div>
           <div className="flex items-center gap-2 text-xs text-[#9C9C9C]"><div className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"/><span className="hidden sm:inline">系统运行正常</span></div>
         </div>
-        {detailId?<AdminOrderDetailPage id={detailId} token={token} staff={staff} onSaveOrder={saveOrder} onAssignRecycler={assignOrderRecycler} onDeleteOrder={deleteOrder} onBack={()=>navigate("/orders")} onError={onError} notify={notify}/>:userDetailId?<UserDetailPage userId={userDetailId} token={token} onBack={()=>navigate("/users")} onViewOrder={(id)=>navigate(`/orders/${encodeURIComponent(id)}`)} onError={onError} notify={notify}/>:loading?<div className="min-h-[420px] flex flex-col items-center justify-center text-gray-400 gap-3"><Loader size={24} className="animate-spin text-indigo-600"/><p className="text-sm">正在加载真实业务数据…</p></div>:<>
+        {detailId?<AdminOrderDetailPage id={detailId} token={token} staff={staff} onSaveOrder={saveOrder} onAssignRecycler={assignOrderRecycler} onDeleteOrder={deleteOrder} onBack={()=>navigate("/orders")} onError={onError} notify={notify} onViewUser={(uid)=>navigate(`/users/${encodeURIComponent(uid)}`)}/>:userDetailId?<UserDetailPage userId={userDetailId} token={token} onBack={()=>navigate("/users")} onViewOrder={(id)=>navigate(`/orders/${encodeURIComponent(id)}`)} onError={onError} notify={notify}/>:loading?<div className="min-h-[420px] flex flex-col items-center justify-center text-gray-400 gap-3"><Loader size={24} className="animate-spin text-indigo-600"/><p className="text-sm">正在加载真实业务数据…</p></div>:<>
           {page==="orders"    &&<OrdersPage staff={staff} groups={groups} orders={displayOrders} onSaveOrder={saveOrder} onAssignRecycler={assignOrderRecycler} onUnsupported={unsupported} onViewOrder={(id)=>navigate(`/orders/${encodeURIComponent(id)}`)}/>}
           {page==="users"     &&<UsersPage token={token} onError={onError} onViewUser={(id)=>navigate(`/users/${encodeURIComponent(id)}`)}/>}
           {page==="members"   &&<MembersPage token={token} roles={roles} onSaveMember={saveMember} onToggleStatus={toggleMemberStatus} onError={onError}/>}
