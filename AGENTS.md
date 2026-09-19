@@ -150,18 +150,15 @@ functionName = "quickstartFunctions"
 
 ### 登录方式
 
-1. **小程序扫码**（默认入口，`/login` 路由，`QrLoginPanel`）
-   - 调 `adminCreateLoginTicket` → 展示小程序码（`qrUrl`，票据 **5 分钟**有效）
-   - 每 2.5s 轮询 `adminCheckLoginTicket { ticket, webNonce }`；`webNonce` 只有创建票据的浏览器持有
-   - 管理员微信扫码 → 小程序隐藏页 `pages/admin-login/index` 输手机号确认（`adminConfirmLoginTicket`，云函数校验白名单 + 绑定 openid）
-   - 轮询到 `confirmed` 拿 `sessionToken` → 写 `localStorage`，与短信登录共用后续流程
-   - 过期/生成失败：本地倒计时归零即标记过期，`WXACODE_CREATE_FAILED`（小程序码生成失败）有专用文案，均可刷新重试或切短信 tab
-
-2. **手机号 + 验证码**（备用入口，同页「短信登录」tab）
+1. **手机号 + 验证码**（当前主要入口，`/login` 路由）
    - `app.auth.signInWithOtp({ phone: "+86 xxx" })` 发验证码，**60s** 倒计时
    - 用户输入 → `data.verifyOtp({ token: code })` 拿到 CloudBase `uid`
    - 调云函数 `adminPhoneLogin { phone, cloudbaseUid: uid }` 换 admin `sessionToken`
    - 写 `localStorage.admin_session_token` / `admin_name`
+
+2. **小程序扫码**（后端能力就绪，**web 端未接线**）
+   - 后端 `adminCreateLoginTicket` / `adminConfirmLoginTicket` / `adminCheckLoginTicket` 均已实现（`recycle/admin.js`）
+   - 但 web 代码里**没有任何调用点**，要启用需自行补前端流程
 
 ### Session TTL
 
@@ -203,7 +200,7 @@ const result = await callCloud<OrderListResult>("adminListOrders", {
 
 ### 已使用的 action 清单（web 端）
 
-- 登录：`adminPhoneLogin`（短信 tab）/ `adminCreateLoginTicket` + `adminCheckLoginTicket`（扫码 tab，`QrLoginPanel`；`adminConfirmLoginTicket` 由小程序端调用）
+- 登录：`adminPhoneLogin`
 - 订单：`adminListOrders` / `adminGetOrderDetail` / `adminUpdateOrder` / `adminAssignOrderRecycler` / `adminDeleteOrder`
 - 品类：`adminListCategories` / `adminSaveCategory` / `adminDeleteCategory`
 - 设置：`adminGetSettings` / `adminListSystemSettings` / `adminSaveSystemSetting` / `adminDeleteSystemSetting`
@@ -222,13 +219,14 @@ const result = await callCloud<OrderListResult>("adminListOrders", {
 - `adminUpdateFeedbackStatus` —— 后端 `feedback.js` 已实现，投诉建议页当前只读，未接线
 - `adminListAdmins` / `adminSaveAdmin` / `adminToggleAdmin` / `adminSaveStaff` —— 旧的管理员/工作人员维护接口，已被 members 链路取代，**web 活代码里没有调用点**（只剩 mock.ts 里的桩）
 - `initAdminCollections` / `initMemberCollections` / `migrateMembersFromLegacy` —— 初始化与迁移，需在小程序端或云开发控制台手动触发
+- `adminCreateLoginTicket` / `adminConfirmLoginTicket` / `adminCheckLoginTicket` —— 扫码登录，见「鉴权」
 
 ## 错误处理
 
 `App.tsx:26-60` 的 `ERROR_TEXT` 集中映射云函数 errMsg 到人类可读消息，当前 **45 个键**：
 
 - 鉴权类 → 触发 `logout()` 并 toast：`ADMIN_SESSION_REQUIRED` / `ADMIN_SESSION_EXPIRED` / `NO_PERMISSION`
-- 登录页专用：`PHONE_NOT_IN_WHITELIST` / `PHONE_BOUND_TO_OTHER_ACCOUNT` / `LOGIN_TICKET_EXPIRED` / `WXACODE_CREATE_FAILED`
+- 登录页专用：`PHONE_NOT_IN_WHITELIST` / `PHONE_BOUND_TO_OTHER_ACCOUNT` / `LOGIN_TICKET_EXPIRED`
 - 订单业务：`ORDER_STATUS_INVALID` / `ORDER_NOT_FOUND` / `ORDER_STATUS_NOT_ASSIGNABLE` / `TRANSFER_PROOF_REQUIRED` / `FINAL_PRICE_REQUIRED` / `ACTUAL_QUANTITY_REQUIRED` / `CANCEL_REASON_REQUIRED`
 - 派单：`STAFF_NOT_ONLINE` / `STAFF_NOT_FOUND`
 - 品类分组：`CATEGORY_GROUP_REQUIRED` / `CATEGORY_GROUP_NOT_FOUND` / `CATEGORY_GROUP_NOT_EMPTY`

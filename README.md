@@ -16,17 +16,15 @@
 
 ## 登录方案
 
-登录页（`/login` 路由，`src/App.tsx` 的 `LoginPage`）提供两种方式，默认**扫码登录**：
-
-**小程序扫码（默认）**：调 `adminCreateLoginTicket` 生成 5 分钟有效的小程序码并展示，Web 端每 2.5s 轮询 `adminCheckLoginTicket`；管理员用微信扫码进入小程序隐藏页 `pages/admin-login/index`，输入管理员手机号点确认（`adminConfirmLoginTicket`），Web 端即自动登入。首次扫码会把微信 openid 绑定到该手机号，之后只有同一个微信能扫码。小程序码生成失败（如小程序未发布、openapi 权限缺失）时展示错误，可重试或切换短信登录。
-
-**手机号 + CloudBase 短信验证码（备用）**：
+当前主链路是**手机号 + CloudBase 短信验证码**（`/login` 路由，实现在 `src/App.tsx` 的 `LoginPage`）：
 
 1. 输入 11 位手机号 → `app.auth.signInWithOtp({ phone: "+86 xxx" })` 发送验证码，前端 60s 倒计时（同号 30s 内只能发 1 次，SDK 侧也会拒）。
 2. 输入验证码 → `verifyOtp({ token: code })` 拿到 CloudBase `uid`。
 3. 携带 `{ phone, cloudbaseUid }` 调云函数 `adminPhoneLogin`，云函数优先匹配 `members` 成员档案（按角色展开权限），未命中回退 `admins` 白名单，通过后签发 `sessionToken`。
 4. `sessionToken` 与显示名写入 `localStorage`（`admin_session_token` / `admin_name`），此后所有管理接口都必须携带它，云函数校验通过才返回真实数据。
 5. Session TTL 为 **7 天**（云函数 `ADMIN_SESSION_TTL`）。过期由云函数返回 `ADMIN_SESSION_EXPIRED`，前端自动清理登录态并回到登录页。
+
+**小程序扫码登录**：后端 `adminCreateLoginTicket` / `adminConfirmLoginTicket` / `adminCheckLoginTicket` 与小程序隐藏页 `pages/admin-login/index` 均已就绪，但 **Web 端目前没有任何调用点**，要启用需自行补前端流程。
 
 ## 首次配置
 

@@ -172,21 +172,6 @@ export async function mockCall<T>(type: string, data: Record<string, unknown>): 
       expiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
     } as T;
   }
-  // 扫码登录三件套：mock 下登录页本身不可达（isDevPreview 自动带 token），
-  // 桩只保证契约形状一致，防止真实响应结构变化时 mock 掩盖问题
-  if (type === "adminCreateLoginTicket") {
-    return {
-      ticket: `t_local_${Date.now()}`,
-      webNonce: `n_local_${Date.now()}`,
-      page: "pages/admin-login/index",
-      path: "/pages/admin-login/index",
-      expiresAt: Date.now() + 5 * 60 * 1000,
-      qrFileID: "",
-      qrUrl: "mock://admin-login/qr.png",
-    } as T;
-  }
-  if (type === "adminCheckLoginTicket") return { status: "pending" } as T;
-  if (type === "adminConfirmLoginTicket") return { adminName: "本地管理员" } as T;
   if (type === "adminListInvites") {
     return { list: [], total: 0, hasMore: false } as T;
   }
