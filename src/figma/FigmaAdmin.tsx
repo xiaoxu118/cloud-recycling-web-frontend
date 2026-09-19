@@ -442,6 +442,7 @@ const INIT_COLS: ColDef[] = [
   { id:"appointmentTime", label:"预约时间", width:165, minWidth:145 },
   { id:"images",          label:"图片",     width:118, minWidth:90  },
   { id:"summary",         label:"回收品类", width:230, minWidth:190 },
+  { id:"amount",          label:"回收金额", width:105, minWidth:92 },
   { id:"recyclers",       label:"回收人员", width:168, minWidth:120 },
   { id:"lastModified",    label:"最后修改", width:118, minWidth:100 },
 
@@ -913,6 +914,12 @@ function OrdersPage({ staff,groups,orders,onSaveOrder,onAssignRecycler,onUnsuppo
         );
       }
       case "appointmentTime": return <span className="text-xs text-gray-600 whitespace-nowrap">{order.appointmentTime}</span>;
+      case "amount":{
+        // 成交金额优先；未完成的订单回退显示估价（≈ 前缀 + 灰色区分）
+        if(order.amount!=null)return <span className="text-sm font-semibold text-gray-900 whitespace-nowrap" title="成交金额">¥{Number(order.amount).toFixed(2)}</span>;
+        if(order.estimatePrice!=null)return <span className="text-xs text-gray-400 whitespace-nowrap" title="估价，订单完成后以成交金额为准">≈¥{Number(order.estimatePrice).toFixed(2)}</span>;
+        return <span className="text-xs text-gray-300">—</span>;
+      }
       case "images": return order.images.length===0?<span className="text-xs text-gray-300">暂无</span>:(
         <div className="flex -space-x-1">
           {order.images.slice(0,3).map((img,i)=>(<ImageThumb key={i} src={img} onClick={()=>setPreviewInfo({images:order.images,idx:i})}/>))}
