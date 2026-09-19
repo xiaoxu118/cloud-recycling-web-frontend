@@ -4387,7 +4387,8 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
   const [superAdminKey,setSuperAdminKey]=useState("super_admin");
   const [loading,setLoading]=useState(true);
   const [mobileMenuOpen,setMobileMenuOpen]=useState(false);
-  const [expandedGroups,setExpandedGroups]=useState<string[]>([]);
+  // 分组展开状态：undefined = 跟随当前页（含当前页的分组默认展开），true/false = 用户手动指定
+  const [groupOpen,setGroupOpen]=useState<Record<string,boolean>>({});
   // 面包屑：二级页面时显示父级名称
   const parentLabel=(()=>{
     for(const g of NAV)if(g.children&&g.children.some(c=>c.id===page))return g.label;
@@ -4740,9 +4741,10 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
             const children=(group.children||[]).filter(c=>auth.has(c.permission));
             if(!children.length)return null;
             const groupActive=children.some(c=>c.id===page);
-            const expanded=expandedGroups.includes(group.key)||groupActive;
+            // 默认跟随当前页展开；手动收起后尊重选择，不因停留子页而强制重新展开
+            const expanded=groupOpen[group.key]!==undefined?groupOpen[group.key]:groupActive;
             return(<div key={group.key}>
-              <button onClick={()=>setExpandedGroups(current=>current.includes(group.key)?current.filter(k=>k!==group.key):[...current,group.key])} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors ${groupActive?"text-indigo-600":"text-[#6B6B6B] hover:bg-[#F4F4F6] hover:text-[#0A0A0A]"}`}>
+              <button onClick={()=>setGroupOpen(current=>({...current,[group.key]:!expanded}))} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors ${groupActive?"text-indigo-600":"text-[#6B6B6B] hover:bg-[#F4F4F6] hover:text-[#0A0A0A]"}`}>
                 <Icon size={17}/>{group.label}
                 {expanded?<ChevronUp size={13} className="ml-auto"/>:<ChevronDown size={13} className="ml-auto"/>}
               </button>
