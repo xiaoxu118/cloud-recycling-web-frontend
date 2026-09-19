@@ -7,7 +7,7 @@ import {
   AlarmClock, Lock, SlidersHorizontal, Store, ChevronUp, Columns3,
   Upload, FileSpreadsheet, Download, AlertCircle,
   BarChart2, TrendingUp, CheckCircle2, Coins, ArrowUpRight, Shield, RotateCcw,
-  Menu, Filter, MessageSquare, Ban, type LucideIcon,
+  Menu, Filter, MessageSquare, Ban, Layers, type LucideIcon,
 } from "lucide-react";
 import {
   ResponsiveContainer, ComposedChart, LineChart, Line, BarChart, Bar,
@@ -4307,18 +4307,18 @@ const NAV: NavGroup[] = [
     {id:"users",   path:"/users",   label:"用户管理", permission:"user:read"},
     {id:"members", path:"/members", label:"成员管理", permission:"member:read"},
     {id:"roles",   path:"/roles",   label:"角色管理", permission:"role:read"},
-    {id:"recruits",path:"/recruits",label:"评估员招募", permission:"member:read"},
     {id:"stores",  path:"/stores",  label:"店铺管理", permission:"member:read"},
+    {id:"recruits",path:"/recruits",label:"评估员招募", permission:"member:read"},
   ]},
-  {key:"cats",      label:"品类管理", icon:Tags,         item:{id:"cats",path:"/categories",label:"品类管理",permission:"category:read"}},
+  {key:"ops",      label:"运营管理", icon:Layers,       children:[
+    {id:"cats",      path:"/categories", label:"品类管理", permission:"category:read"},
+    {id:"points",    path:"/points",     label:"积分流水", permission:"points:read"},
+    {id:"goods",     path:"/goods",      label:"商品管理", permission:"points:read"},
+    {id:"exchanges", path:"/exchanges",  label:"兑换管理", permission:"points:read"},
+    {id:"invites",   path:"/invites",    label:"邀请管理", permission:"points:read"},
+    {id:"feedback",  path:"/feedback",   label:"投诉建议", permission:"feedback:read"},
+  ]},
   {key:"analytics", label:"分析统计", icon:BarChart2,    item:{id:"analytics",path:"/analytics",label:"分析统计",permission:"analytics:read"}},
-  {key:"feedback",  label:"投诉建议", icon:MessageSquare,item:{id:"feedback",path:"/feedback",label:"投诉建议",permission:"feedback:read"}},
-  {key:"points",    label:"积分管理", icon:Coins,        children:[
-    {id:"points",   path:"/points",    label:"积分流水", permission:"points:read"},
-    {id:"goods",    path:"/goods",     label:"商品管理", permission:"points:read"},
-    {id:"exchanges",path:"/exchanges", label:"兑换管理", permission:"points:read"},
-  ]},
-  {key:"invites",   label:"邀请管理", icon:UserPlus,     item:{id:"invites",path:"/invites",label:"邀请管理",permission:"points:read"}},
   {key:"system",    label:"系统配置", icon:Settings,     item:{id:"system",path:"/settings",label:"系统配置",permission:"setting:read"}},
 ];
 
@@ -4732,8 +4732,9 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
               if(!auth.has(group.item.permission))return null;
               const active=page===group.item.id;
               const target=group.item;
+              // 不可展开的单项菜单不带箭头，仅用高亮表示选中
               return(<button key={group.key} onClick={()=>{navigate(target.path);setMobileMenuOpen(false);}} className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-md text-sm font-medium transition-colors ${active?"bg-indigo-50 text-indigo-600":"text-[#6B6B6B] hover:bg-[#F4F4F6] hover:text-[#0A0A0A]"}`}>
-                <Icon size={17}/>{group.label}{active&&<ChevronRight size={13} className="ml-auto"/>}
+                <Icon size={17}/>{group.label}
               </button>);
             }
             const children=(group.children||[]).filter(c=>auth.has(c.permission));
@@ -4749,7 +4750,7 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
                 {children.map(child=>{
                   const active=page===child.id;
                   return(<button key={child.id} onClick={()=>{navigate(child.path);setMobileMenuOpen(false);}} className={`w-full flex items-center px-3 py-2 rounded-md text-sm transition-colors ${active?"bg-indigo-50 text-indigo-600 font-medium":"text-[#6B6B6B] hover:bg-[#F4F4F6] hover:text-[#0A0A0A]"}`}>
-                    {child.label}{active&&<ChevronRight size={13} className="ml-auto"/>}
+                    {child.label}
                   </button>);
                 })}
               </div>}
