@@ -78,6 +78,7 @@ import type {
   StaffRecruitListResult,
   StaffRecruitRecord,
   StaffRecruitStatus,
+  StoreRecord,
   SystemSetting,
   UserPointsDetail,
   UserRecord,
@@ -85,7 +86,7 @@ import type {
 } from "../types";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-type Page = "orders" | "users" | "members" | "roles" | "recruits" | "cats" | "analytics" | "feedback" | "points" | "goods" | "exchanges" | "invites" | "system";
+type Page = "orders" | "users" | "members" | "roles" | "recruits" | "stores" | "cats" | "analytics" | "feedback" | "points" | "goods" | "exchanges" | "invites" | "system";
 type OrderStatus = "待上门" | "进行中" | "已完成" | "已取消";
 type StaffStatus = "online" | "resting" | "resigned";
 type BusinessOrderType = "recycle" | "furniture_demolition" | "shop_demolition";
@@ -1579,6 +1580,189 @@ const RECRUIT_STATUS_META: Record<StaffRecruitStatus,{label:string;color:"warnin
   passed:   {label:"已通过", color:"success"},
   rejected: {label:"已拒绝", color:"default"},
 };
+
+// 店铺管理：stores 集合（独立 adminStores 函数），记录店铺地址与联系信息
+const STORES_FN = "adminStores";
+
+function StoresPage({ token,onError,notify }:{
+  token:string;
+  onError:(error:unknown)=>void;
+  notify:(message:{kind:"success"|"error";text:string})=>void;
+}) {
+  const auth=useAuth();
+  const canWrite=auth.has("member:write");
+  const [list,setList]=useState<StoreRecord[]>([]);
+  const [loading,setLoading]=useState(true);
+  const [keyword,setKeyword]=useState("");
+  const [editing,setEditing]=useState<StoreRecord|null|undefined>(undefined);
+
+  const load=useCallback(async()=>{
+    setLoading(true);
+    try{
+      const data=await callCloud<StoreRecord[]>("adminListStores",{sessionToken:token},STORES_FN);
+      setList(data||[]);
+    }catch(error){onError(error);setList([]);}
+    finally{setLoading(false);}
+  },[token,onError]);
+
+  useEffect(()=>{void load();},[load]);
+
+  const filtered=useMemo(()=>{
+    const query=keyword.trim().toLowerCase();
+    if(!query)return list;
+    return list.filter(item=>[item.name,item.contact,item.phone,item.region,item.address]
+      .some(value=>String(value||"").toLowerCase().includes(query)));
+  },[list,keyword]);
+
+  const save=async(store:StoreRecord)=>{
+    await callCloud("adminSaveStore",{sessionToken:token,store},STORES_FN);
+    notify({kind:"success",text:store._id?"店铺已更新":"店铺已添加"});
+    await load();
+  };
+
+  const remove=async(id:string)=>{
+    if(!window.confirm("确认删除这家店铺？删除后不可恢复。"))return;
+    try{
+      await callCloud("adminDeleteStore",{sessionToken:token,id},STORES_FN);
+      notify({kind:"success",text:"店铺已删除"});
+      await load();
+    }catch(error){onError(error);}
+  };
+
+  return(
+    <div className="p-6 space-y-5">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-xl font-semibold text-gray-900">店铺管理</h1>
+          <p className="text-xs text-gray-400 mt-1">维护店铺地址与联系信息，共 {list.length} 家。成员档案中的「所属门店」为自由填写，暂不强制关联。</p>
+        </div>
+        <Stack direction="row" spacing={1}>
+          <Button variant="outlined" size="small" startIcon={<RefreshCw size={14}/>} onClick={()=>void load()}>刷新</Button>
+          {canWrite&&<Button variant="contained" size="small" disableElevation startIcon={<Plus size={14}/>} onClick={()=>setEditing(null)}>添加店铺</Button>}
+        </Stack>
+      </div>
+
+      <Paper variant="outlined" sx={{borderColor:"#E8E8EC",borderRadius:"12px",p:2}}>
+        <TextField size="small" fullWidth placeholder="搜索店名 / 联系人 / 电话 / 地址" value={keyword} onChange={e=>setKeyword(e.target.value)}
+          slotProps={{input:{startAdornment:<InputAdornment position="start"><Search size={14}/></InputAdornment>}}}/>
+      </Paper>
+
+      {/* Mobile Cards */}
+      <div className="md:hidden space-y-3">
+        {loading?<div className="bg-white rounded-xl p-8 text-center text-sm text-gray-400 border border-[#E8E8EC]">加载中…</div>
+        :filtered.length===0?<div className="bg-white rounded-xl p-8 text-center text-sm text-gray-400 border border-[#E8E8EC]">{keyword?"没有匹配的店铺":"暂无店铺，点击右上角「添加店铺」开始"}</div>
+        :filtered.map(item=>(
+          <div key={item._id} className="bg-white rounded-xl p-4 border border-[#E8E8EC] space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <p className="text-sm font-medium text-gray-800">{item.name}</p>
+              <Chip size="small" label={item.enabled?"营业中":"已停用"} color={item.enabled?"success":"default"}/>
+            </div>
+            <div className="flex items-start gap-1.5 text-xs text-gray-500"><MapPin size={12} className="mt-0.5 flex-shrink-0 text-gray-400"/><span>{[item.region,item.address].filter(Boolean).join(" ")||"未填写地址"}</span></div>
+            <div className="flex items-center gap-1.5 text-xs text-gray-400"><Phone size={12} className="flex-shrink-0"/><span>{[item.contact,item.phone].filter(Boolean).join(" · ")||"未填写联系信息"}</span></div>
+            {canWrite&&<Stack direction="row" spacing={1}>
+              <Button size="small" variant="outlined" onClick={()=>setEditing(item)}>编辑</Button>
+              <Button size="small" variant="outlined" color="error" onClick={()=>void remove(item._id)}>删除</Button>
+            </Stack>}
+          </div>
+        ))}
+      </div>
+
+      {/* Desktop Table */}
+      <Paper variant="outlined" sx={{borderColor:"#E8E8EC",borderRadius:"12px",display:{xs:"none",md:"block"},overflow:"hidden"}}>
+        <TableContainer>
+          <Table size="small">
+            <TableHead>
+              <TableRow sx={{backgroundColor:"#FAFAFC"}}>
+                <TableCell sx={{fontWeight:600}}>店铺名称</TableCell>
+                <TableCell sx={{fontWeight:600}}>联系人</TableCell>
+                <TableCell sx={{fontWeight:600}}>联系电话</TableCell>
+                <TableCell sx={{fontWeight:600}}>所在地区</TableCell>
+                <TableCell sx={{fontWeight:600}}>详细地址</TableCell>
+                <TableCell sx={{fontWeight:600}}>状态</TableCell>
+                <TableCell sx={{fontWeight:600}}>更新时间</TableCell>
+                {canWrite&&<TableCell sx={{fontWeight:600}} align="right">操作</TableCell>}
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {loading&&<TableRow><TableCell colSpan={canWrite?8:7} align="center" sx={{py:6,color:"#9C9C9C",fontSize:13}}>加载中…</TableCell></TableRow>}
+              {!loading&&filtered.length===0&&<TableRow><TableCell colSpan={canWrite?8:7} align="center" sx={{py:8,color:"#9C9C9C",fontSize:13}}>{keyword?"没有匹配的店铺":"暂无店铺"}</TableCell></TableRow>}
+              {!loading&&filtered.map(item=>(
+                <TableRow key={item._id} hover>
+                  <TableCell sx={{fontWeight:600,whiteSpace:"nowrap"}}>{item.name}</TableCell>
+                  <TableCell>{item.contact||"—"}</TableCell>
+                  <TableCell sx={{fontFamily:"ui-monospace, monospace",fontSize:12}}>{item.phone||"—"}</TableCell>
+                  <TableCell sx={{whiteSpace:"nowrap"}}>{item.region||"—"}</TableCell>
+                  <TableCell>{item.address||"—"}</TableCell>
+                  <TableCell><Chip size="small" label={item.enabled?"营业中":"已停用"} color={item.enabled?"success":"default"}/></TableCell>
+                  <TableCell sx={{color:"#9C9C9C",fontSize:12,whiteSpace:"nowrap"}}>{formatCloudTime(item.updateTime||item.createTime)}</TableCell>
+                  {canWrite&&<TableCell align="right" sx={{whiteSpace:"nowrap"}}>
+                    <MuiTooltip title="编辑"><Button size="small" onClick={()=>setEditing(item)}><Edit2 size={13}/></Button></MuiTooltip>
+                    <MuiTooltip title="删除"><Button size="small" color="error" onClick={()=>void remove(item._id)}><Trash2 size={13}/></Button></MuiTooltip>
+                  </TableCell>}
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </TableContainer>
+      </Paper>
+
+      {editing!==undefined&&<StoreEditor initial={editing} onClose={()=>setEditing(undefined)} onSave={async(store)=>{await save(store);setEditing(undefined);}}/>}
+    </div>
+  );
+}
+
+function StoreEditor({ initial,onClose,onSave }:{
+  initial:StoreRecord|null;
+  onClose:()=>void;
+  onSave:(store:StoreRecord)=>Promise<void>;
+}) {
+  const isEdit=Boolean(initial&&initial._id);
+  const [form,setForm]=useState<StoreRecord>(initial||{_id:"",name:"",contact:"",phone:"",region:"",address:"",remark:"",enabled:true});
+  const [saving,setSaving]=useState(false);
+  const [error,setError]=useState("");
+  const nameValid=String(form.name||"").trim().length>0;
+  const phoneValid=!String(form.phone||"")||/^1[3-9]\d{9}$/.test(String(form.phone));
+
+  const save=async()=>{
+    if(!nameValid||!phoneValid)return;
+    setError("");
+    setSaving(true);
+    try{
+      await onSave({...form,name:String(form.name).trim()});
+    }catch(e:unknown){
+      const hint=(e&&typeof e==="object"&&"data" in e)?(e as {data?:{hint?:string}}).data?.hint:"";
+      setError(hint||(e instanceof Error?e.message:"保存失败"));
+    }finally{setSaving(false);}
+  };
+
+  return(
+    <Dialog open fullWidth maxWidth="sm" onClose={onClose} slotProps={{paper:{sx:{borderRadius:3}}}}>
+      <DialogTitle>{isEdit?"编辑店铺":"添加店铺"}</DialogTitle>
+      <DialogContent dividers>
+        <Stack spacing={2.5} sx={{pt:1}}>
+          <TextField label="店铺名称" required fullWidth value={form.name||""} onChange={e=>setForm({...form,name:e.target.value})}
+            error={!nameValid} helperText={nameValid?"":"请填写店铺名称"}/>
+          <Stack direction="row" spacing={2}>
+            <TextField label="联系人" fullWidth value={form.contact||""} onChange={e=>setForm({...form,contact:e.target.value})}/>
+            <TextField label="联系电话" fullWidth value={form.phone||""} onChange={e=>setForm({...form,phone:e.target.value.replace(/\D/g,"").slice(0,11)})}
+              error={!phoneValid} helperText={phoneValid?"选填，11 位手机号":"需为 11 位手机号"}
+              slotProps={{htmlInput:{inputMode:"numeric",maxLength:11,style:{fontFamily:"ui-monospace, monospace"}}}}/>
+          </Stack>
+          <TextField label="所在地区" fullWidth value={form.region||""} onChange={e=>setForm({...form,region:e.target.value})}
+            placeholder="例如：浙江省 杭州市 滨江区"/>
+          <TextField label="详细地址" fullWidth value={form.address||""} onChange={e=>setForm({...form,address:e.target.value})}
+            placeholder="街道、门牌号等"/>
+          <TextField label="备注" fullWidth multiline minRows={2} value={form.remark||""} onChange={e=>setForm({...form,remark:e.target.value})}/>
+          <FormControlLabel control={<Checkbox checked={form.enabled!==false} onChange={e=>setForm({...form,enabled:e.target.checked})}/>} label="营业中（关闭后标记为已停用，仅作档案标识）"/>
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose}>取消</Button>
+        <Button variant="contained" disableElevation disabled={saving||!nameValid||!phoneValid} onClick={()=>void save()}>{saving?"保存中…":"保存"}</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
 
 function StaffRecruitsPage({ token,onError,notify }:{
   token:string;
@@ -4062,6 +4246,7 @@ const NAV: NavGroup[] = [
     {id:"members", path:"/members", label:"成员管理", permission:"member:read"},
     {id:"roles",   path:"/roles",   label:"角色管理", permission:"role:read"},
     {id:"recruits",path:"/recruits",label:"评估员招募", permission:"member:read"},
+    {id:"stores",  path:"/stores",  label:"店铺管理", permission:"member:read"},
   ]},
   {key:"cats",      label:"品类管理", icon:Tags,         item:{id:"cats",path:"/categories",label:"品类管理",permission:"category:read"}},
   {key:"analytics", label:"分析统计", icon:BarChart2,    item:{id:"analytics",path:"/analytics",label:"分析统计",permission:"analytics:read"}},
@@ -4091,7 +4276,7 @@ const MEMBER_STATUS_META: Record<MemberStatus,{label:string;color:"success"|"war
 
 // 页面 id → 面包屑文案，二级页面带上父级名称
 const PAGE_LABEL: Record<Page,string> = {
-  orders:"订单管理", users:"用户管理", members:"成员管理", roles:"角色管理", recruits:"评估员招募",
+  orders:"订单管理", users:"用户管理", members:"成员管理", roles:"角色管理", recruits:"评估员招募", stores:"店铺管理",
   cats:"品类管理", analytics:"分析统计", feedback:"投诉建议", points:"积分流水", goods:"商品管理", exchanges:"兑换管理", invites:"邀请管理", system:"系统配置",
 };
 
@@ -4102,6 +4287,7 @@ const pageFromPath=(pathname:string):Page|null=>{
   if(pathname==="/members"||pathname.startsWith("/members/")||pathname==="/staff")return "members";
   if(pathname==="/roles")return "roles";
   if(pathname==="/recruits")return "recruits";
+  if(pathname==="/stores")return "stores";
   if(pathname==="/categories"||pathname==="/cats")return "cats";
   if(pathname==="/analytics")return "analytics";
   if(pathname==="/feedback")return "feedback";
@@ -4532,6 +4718,7 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
           {page==="members"   &&<MembersPage token={token} roles={roles} onSaveMember={saveMember} onToggleStatus={toggleMemberStatus} onError={onError}/>}
           {page==="roles"     &&<RolesPage roles={roles} catalog={permissionCatalog} superAdminKey={superAdminKey} onSaveRole={saveRole} onDeleteRole={deleteRole}/>}
           {page==="recruits"  &&<StaffRecruitsPage token={token} onError={onError} notify={notify}/>}
+          {page==="stores"    &&<StoresPage token={token} onError={onError} notify={notify}/>}
           {page==="cats"      &&<CategoryTreePage nodes={categoryTree} onSave={saveCategoryNode} onDelete={deleteCategory}/>}
           {page==="analytics" &&<AnalyticsPage orders={displayOrders}/>} 
           {page==="feedback"  &&<FeedbackPage items={feedbacks} loading={loading} onRefresh={reloadFeedbacks}/>}

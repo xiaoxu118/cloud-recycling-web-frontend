@@ -429,3 +429,17 @@ export interface InviteStat {
   /** 累计发放积分（正流水减冲正负流水） */
   totalPoints: number;
 }
+
+/** stores 集合记录：店铺档案（名称 + 地址 + 联系信息），由 adminStores 函数维护 */
+export interface StoreRecord {
+  _id: string;
+  name: string;
+  contact?: string;
+  phone?: string;
+  region?: string;
+  address?: string;
+  remark?: string;
+  enabled: boolean;
+  createTime?: number;
+  updateTime?: number;
+}

@@ -1,4 +1,4 @@
-import type { Category, Order, RecycleSettings, StaffRecord, SystemSetting, UserRecord } from "../types";
+import type { Category, Order, RecycleSettings, StaffRecord, StoreRecord, SystemSetting, UserRecord } from "../types";
 
 let orders: Order[] = [
   {
@@ -70,6 +70,10 @@ let systemSettings: SystemSetting[] = [
   { key: "user_agreement", label: "用户协议", type: "longtext", value: "", description: "小程序登录页展示，用户点击《用户协议》弹窗内容" },
   { key: "privacy_policy", label: "隐私政策", type: "longtext", value: "", description: "小程序登录页展示，用户点击《隐私政策》弹窗内容" },
   { key: "terms_of_service", label: "服务条款", type: "longtext", value: "", description: "小程序下单页展示，用户点击《来卖吧上门服务条款》弹窗内容" },
+];
+
+let mockStores: StoreRecord[] = [
+  { _id: "mock-store-1", name: "滨江旗舰店", contact: "王店长", phone: "13800001234", region: "浙江省 杭州市 滨江区", address: "滨和路 528 号", enabled: true, createTime: Date.now() - 86400000, updateTime: Date.now() - 3600000 },
 ];
 
 // Mock 仅用于显式的 ?mock=1 本地预览；生产环境始终调用云函数。
@@ -180,6 +184,26 @@ export async function mockCall<T>(type: string, data: Record<string, unknown>): 
   }
   if (type === "adminInvalidateInvite") {
     return { revokedPoints: 0 } as T;
+  }
+  // 店铺管理（adminStores 函数）：内存态模拟，刷新后重置
+  if (type === "adminListStores") {
+    return mockStores as T;
+  }
+  if (type === "adminSaveStore") {
+    const store = (data.store || {}) as { _id?: string; name?: string };
+    const name = String(store.name || "").trim();
+    if (!name) throw new Error("PARAM_INVALID");
+    if (mockStores.some((item) => item.name === name && item._id !== store._id)) throw new Error("STORE_NAME_DUPLICATE");
+    if (store._id) {
+      mockStores = mockStores.map((item) => item._id === store._id ? { ...item, ...store, name } as typeof item : item);
+    } else {
+      mockStores = [{ _id: `mock-store-${Date.now()}`, name, enabled: true, createTime: Date.now(), updateTime: Date.now(), ...(store as object) } as typeof mockStores[number], ...mockStores];
+    }
+    return undefined as T;
+  }
+  if (type === "adminDeleteStore") {
+    mockStores = mockStores.filter((item) => item._id !== data.id);
+    return undefined as T;
   }
   throw new Error(`本地预览未实现接口：${type}`);
 }

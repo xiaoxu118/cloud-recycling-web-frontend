@@ -33,11 +33,15 @@ export async function initCloud() {
   app = cloudbase.init({ env: adminConfig.env });
 }
 
-export async function callCloud<T>(type: string, data: Record<string, unknown> = {}) {
+export async function callCloud<T>(
+  type: string,
+  data: Record<string, unknown> = {},
+  functionName?: string,
+) {
   if (isDevPreview()) return mockCall<T>(type, data);
   if (!app) throw new CloudError("CLOUDBASE_NOT_READY");
   const response = await app.callFunction({
-    name: adminConfig.functionName || "quickstartFunctions",
+    name: functionName || adminConfig.functionName || "quickstartFunctions",
     data: { type, ...data },
   });
   const result = response.result as CloudFunctionResult<T> | undefined;

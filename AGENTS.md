@@ -207,6 +207,7 @@ const result = await callCloud<OrderListResult>("adminListOrders", {
 - 人员（旧链路，仍作为派单下拉与兼容用）：`adminListUsers` / `adminUserDetail` / `adminListStaff`
 - 成员与角色（新链路）：`adminGetAuthInfo` / `adminListMembers` / `adminGetMemberDetail` / `adminSaveMember` / `adminToggleMemberStatus` / `adminListRoles` / `adminSaveRole` / `adminDeleteRole`
 - 评估员招募：`adminListStaffRecruits` / `adminUpdateStaffRecruit` / `adminDeleteStaffRecruit`
+- 店铺管理（**独立 adminStores 函数**，非 quickstartFunctions）：`adminListStores` / `adminSaveStore` / `adminDeleteStore`，stores 集合记录店铺地址/联系信息
 - 积分：`adminListPointsRecords` / `adminGetUserPoints` / `adminAdjustUserPoints` / `adminRegrantOrderPoints`
 - 拉新邀请：`adminListInvites` / `adminInviteStat` / `adminInvalidateInvite`
 - 积分商城：`adminListPointsGoods` / `adminSavePointsGoods` / `adminTogglePointsGoods` / `adminListExchanges` / `adminVerifyExchange` / `adminShipExchange`

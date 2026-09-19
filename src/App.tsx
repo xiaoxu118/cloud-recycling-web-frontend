@@ -50,6 +50,8 @@ const ERROR_TEXT: Record<string, string> = {
   // 评估员招募
   MISSING_RECRUIT_ID: "报名记录不存在，请刷新后重试",
   STATUS_INVALID: "处理状态不合法",
+  // 店铺管理
+  STORE_NAME_DUPLICATE: "已存在同名店铺，请换一个名称",
   // 拉新邀请
   INVITE_NOT_FOUND: "邀请记录不存在或已被删除",
   INVITE_ALREADY_INVALID: "该邀请记录已作废，无需重复操作",
