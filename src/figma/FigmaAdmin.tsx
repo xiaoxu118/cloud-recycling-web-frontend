@@ -3454,7 +3454,7 @@ const FULFILL_LABEL: Record<PointsFulfillType,string> = {
 const emptyGoodsForm=():PointsGoods=>({
   _id:"", name:"", cover:"", images:[], desc:"", category:"grain",
   costPoints:1000, stock:0, limitPerUser:0, fulfillType:"pickup",
-  pickupStore:"", status:"off", sort:0,
+  pickupStore:"", pickupStoreAddress:"", status:"off", sort:0,
 });
 
 function PointsGoodsTab({token,onError,notify}:{token:string;onError:(error:unknown)=>void;notify:(message:{kind:"success"|"error";text:string})=>void}){
@@ -3465,6 +3465,7 @@ function PointsGoodsTab({token,onError,notify}:{token:string;onError:(error:unkn
   const [result,setResult]=useState<PointsGoodsListResult|null>(null);
   const [loading,setLoading]=useState(true);
   const [form,setForm]=useState<PointsGoods|null>(null);
+  const [coordPaste,setCoordPaste]=useState("");
   const [saving,setSaving]=useState(false);
   const [formError,setFormError]=useState("");
   const [uploading,setUploading]=useState(false);
@@ -3498,11 +3499,29 @@ function PointsGoodsTab({token,onError,notify}:{token:string;onError:(error:unkn
     finally{setUploading(false);}
   };
 
+  // 腾讯坐标拾取器（lbs.qq.com/getPoint）复制出来是「经度,纬度」格式，这里解析后自动填入两项
+  const applyCoordPaste=()=>{
+    const match=coordPaste.match(/(-?\d+(?:\.\d+)?)\s*[,，\s]\s*(-?\d+(?:\.\d+)?)/);
+    if(!match){notify({kind:"error",text:"坐标格式不对，应类似 120.211201,30.112233（经度在前）"});return;}
+    const lng=Number(match[1]);
+    const lat=Number(match[2]);
+    if(!(lat>=-90&&lat<=90)||!(lng>=-180&&lng<=180)){notify({kind:"error",text:"坐标超出范围：纬度 -90~90，经度 -180~180"});return;}
+    setForm(prev=>prev?{...prev,pickupStoreLat:lat,pickupStoreLng:lng}:prev);
+    setCoordPaste("");
+  };
+
   const submit=async()=>{
     if(!form)return;
     if(!form.name.trim()){setFormError("请填写商品名称");return;}
     if(!(form.costPoints>0)){setFormError("兑换积分必须大于 0");return;}
     if(form.fulfillType==="pickup"&&!form.pickupStore?.trim()){setFormError("自提商品需填写自提门店");return;}
+    // 经纬度必须成对且在合法范围内，否则小程序端导航会定位到错误地点
+    const lat=form.pickupStoreLat;
+    const lng=form.pickupStoreLng;
+    const hasLat=typeof lat==="number";
+    const hasLng=typeof lng==="number";
+    if(hasLat!==hasLng){setFormError("门店坐标的纬度和经度需成对填写，或都留空");return;}
+    if(hasLat&&hasLng&&((lat<-90||lat>90)||(lng<-180||lng>180))){setFormError("坐标超出范围：纬度 -90~90，经度 -180~180");return;}
     setFormError("");
     setSaving(true);
     try{
@@ -3518,6 +3537,9 @@ function PointsGoodsTab({token,onError,notify}:{token:string;onError:(error:unkn
         limitPerUser:form.limitPerUser,
         fulfillType:form.fulfillType,
         pickupStore:form.pickupStore||"",
+        pickupStoreAddress:(form.pickupStoreAddress||"").trim(),
+        pickupStoreLat:hasLat?lat:"",
+        pickupStoreLng:hasLng?lng:"",
         status:form.status,
         sort:form.sort,
       });
@@ -3667,7 +3689,28 @@ function PointsGoodsTab({token,onError,notify}:{token:string;onError:(error:unkn
           <TextField label="每人限兑（0 为不限）" type="number" value={form.limitPerUser} onChange={(event)=>setForm({...form,limitPerUser:Math.max(0,Math.trunc(Number(event.target.value)||0))})} slotProps={{htmlInput:{min:0,step:"1"}}}/>
           <TextField label="排序（越大越前）" type="number" value={form.sort} onChange={(event)=>setForm({...form,sort:Math.trunc(Number(event.target.value)||0)})} slotProps={{htmlInput:{step:"1"}}}/>
         </div>
-        {form.fulfillType==="pickup"&&<TextField label="自提门店" required fullWidth value={form.pickupStore||""} onChange={(event)=>setForm({...form,pickupStore:event.target.value})} placeholder="例如：来卖吧回收站（XX路 123 号）" slotProps={{htmlInput:{maxLength:80}}}/>}
+                {form.fulfillType==="pickup"&&<TextField label="自提门店" required fullWidth value={form.pickupStore||""} onChange={(event)=>setForm({...form,pickupStore:event.target.value})} placeholder="例如：来卖吧回收站（XX路 123 号）" slotProps={{htmlInput:{maxLength:80}}}/>}
+                {form.fulfillType==="pickup"&&<Stack spacing={2}>
+                  <TextField label="门店地址（选填）" fullWidth value={form.pickupStoreAddress||""} onChange={(event)=>setForm({...form,pickupStoreAddress:event.target.value})}
+                    placeholder="例如：浙江省杭州市滨江区滨和路 528 号" slotProps={{htmlInput:{maxLength:200}}}
+                    helperText="兑换详情页门店卡片展示的地址；坐标配齐后小程序端可一键地图导航"/>
+                  <Stack direction={{xs:"column",sm:"row"}} spacing={2}>
+                    <TextField label="纬度（lat）" fullWidth type="number" slotProps={{htmlInput:{step:"0.000001"}}}
+                      value={typeof form.pickupStoreLat==="number"?String(form.pickupStoreLat):""}
+                      onChange={(event)=>{const raw=event.target.value.trim();const num=Number(raw);setForm({...form,pickupStoreLat:raw!==""&&Number.isFinite(num)?num:undefined});}}
+                      helperText="与经度成对填写"/>
+                    <TextField label="经度（lng）" fullWidth type="number" slotProps={{htmlInput:{step:"0.000001"}}}
+                      value={typeof form.pickupStoreLng==="number"?String(form.pickupStoreLng):""}
+                      onChange={(event)=>{const raw=event.target.value.trim();const num=Number(raw);setForm({...form,pickupStoreLng:raw!==""&&Number.isFinite(num)?num:undefined});}}
+                      helperText="留空则不启用导航"/>
+                  </Stack>
+                  <Stack direction={{xs:"column",sm:"row"}} spacing={1} sx={{alignItems:{xs:"stretch",sm:"center"}}}>
+                    <TextField size="small" fullWidth label="粘贴拾取器坐标（经度,纬度）" value={coordPaste} onChange={(event)=>setCoordPaste(event.target.value)}
+                      placeholder="如 120.211201,30.112233" helperText="从腾讯坐标拾取器复制的格式，点「填入」自动解析"/>
+                    <Button size="small" variant="outlined" disabled={!coordPaste.trim()} onClick={applyCoordPaste}>填入</Button>
+                    <Button size="small" variant="text" href="https://lbs.qq.com/getPoint/" target="_blank" rel="noreferrer">打开拾取器</Button>
+                  </Stack>
+                </Stack>}
         <TextField label="商品说明" fullWidth multiline rows={3} value={form.desc||""} onChange={(event)=>setForm({...form,desc:event.target.value})} slotProps={{htmlInput:{maxLength:500}}}/>
         <FormControlLabel control={<Checkbox checked={form.status==="on"} onChange={(event)=>setForm({...form,status:event.target.checked?"on":"off"})}/>} label="立即上架"/>
         {formError&&<p className="text-xs text-red-500">{formError}</p>}

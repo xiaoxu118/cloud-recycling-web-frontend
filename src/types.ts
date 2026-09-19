@@ -339,6 +339,10 @@ export interface PointsGoods {
   limitPerUser: number;
   fulfillType: PointsFulfillType;
   pickupStore?: string;
+  /** 自提门店地址 + 腾讯地图坐标（可选）；坐标配齐后小程序端可一键 openLocation 导航 */
+  pickupStoreAddress?: string;
+  pickupStoreLat?: number | "";
+  pickupStoreLng?: number | "";
   status: "on" | "off";
   sort: number;
   exchangedCount?: number;
@@ -364,6 +368,9 @@ export interface PointsExchange {
     costPoints?: number;
     fulfillType?: PointsFulfillType;
     pickupStore?: string;
+    pickupStoreAddress?: string;
+    pickupStoreLat?: number | "";
+    pickupStoreLng?: number | "";
   };
   costPoints: number;
   status: PointsExchangeStatus;
