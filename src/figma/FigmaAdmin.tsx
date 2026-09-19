@@ -14,6 +14,7 @@ import {
   PieChart, Pie, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
 } from "recharts";
 import { useLocation, useNavigate } from "react-router-dom";
+import { regionData } from "element-china-area-data";
 import TextField from "@mui/material/TextField";
 import MenuItem from "@mui/material/MenuItem";
 import InputAdornment from "@mui/material/InputAdornment";
@@ -1584,6 +1585,35 @@ const RECRUIT_STATUS_META: Record<StaffRecruitStatus,{label:string;color:"warnin
 // 店铺管理：stores 集合（独立 adminStores 函数），记录店铺地址与联系信息
 const STORES_FN = "adminStores";
 
+// 省市区级联数据（element-china-area-data），按 label 匹配；存储仍为空格拼接的字符串
+type RegionNode = { value: string; label: string; children?: RegionNode[] };
+const REGION_TREE = regionData as unknown as RegionNode[];
+// 直辖市 / 直辖县的市级占位名：展示时用省名代替，存储时跳过（如「北京市 东城区」）
+const CITY_PLACEHOLDER = new Set(["市辖区", "县", "省直辖县级行政区划", "自治区直辖县级行政区划"]);
+const cityLabelOf = (node: RegionNode, province: string) =>
+  CITY_PLACEHOLDER.has(node.label) ? province : node.label;
+const composeRegion = (province: string, city: string, area: string) =>
+  [province, city && !CITY_PLACEHOLDER.has(city) ? city : "", area].filter(Boolean).join(" ");
+// 把已保存的 region 字符串解析回三级选择（容错：旧数据手填不合法时置空，不覆盖原值直到重新选择）
+const parseRegionString = (region: string): { province: string; city: string; area: string } => {
+  const parts = String(region || "").split(/\s+/).filter(Boolean);
+  const provinceNode = parts[0] ? REGION_TREE.find((node) => node.label === parts[0]) : undefined;
+  if (!provinceNode) return { province: "", city: "", area: "" };
+  const province = provinceNode.label;
+  const children = provinceNode.children || [];
+  if (parts[1]) {
+    const asCity = children.find((node) => node.label === parts[1]);
+    if (asCity) {
+      const area = parts[2] && (asCity.children || []).some((node) => node.label === parts[2]) ? parts[2] : "";
+      return { province, city: asCity.label, area };
+    }
+    // 直辖市两段式：第二段直接是区县
+    const cityParent = children.find((node) => (node.children || []).some((area) => area.label === parts[1]));
+    if (cityParent) return { province, city: cityParent.label, area: parts[1] };
+  }
+  return { province, city: "", area: "" };
+};
+
 function StoresPage({ token,onError,notify }:{
   token:string;
   onError:(error:unknown)=>void;
@@ -1722,6 +1752,26 @@ function StoreEditor({ initial,onClose,onSave }:{
   const [error,setError]=useState("");
   const nameValid=String(form.name||"").trim().length>0;
   const phoneValid=!String(form.phone||"")||/^1[3-9]\d{9}$/.test(String(form.phone));
+  const initialRegion=useMemo(()=>parseRegionString(initial?.region||""),[initial]);
+  const [province,setProvince]=useState(initialRegion.province);
+  const [city,setCity]=useState(initialRegion.city);
+  const [area,setArea]=useState(initialRegion.area);
+  const cityNodes=(REGION_TREE.find(node=>node.label===province)?.children)||[];
+  const cityNode=cityNodes.find(node=>node.label===city);
+  const areaNodes=(cityNode?.children)||[];
+
+  const pickProvince=(label:string)=>{
+    setProvince(label);setCity("");setArea("");
+    setForm(current=>({...current,region:composeRegion(label,"","")}));
+  };
+  const pickCity=(label:string)=>{
+    setCity(label);setArea("");
+    setForm(current=>({...current,region:composeRegion(province,label,"")}));
+  };
+  const pickArea=(label:string)=>{
+    setArea(label);
+    setForm(current=>({...current,region:composeRegion(province,city,label)}));
+  };
 
   const save=async()=>{
     if(!nameValid||!phoneValid)return;
@@ -1748,8 +1798,20 @@ function StoreEditor({ initial,onClose,onSave }:{
               error={!phoneValid} helperText={phoneValid?"选填，11 位手机号":"需为 11 位手机号"}
               slotProps={{htmlInput:{inputMode:"numeric",maxLength:11,style:{fontFamily:"ui-monospace, monospace"}}}}/>
           </Stack>
-          <TextField label="所在地区" fullWidth value={form.region||""} onChange={e=>setForm({...form,region:e.target.value})}
-            placeholder="例如：浙江省 杭州市 滨江区"/>
+          <Stack direction={{xs:"column",sm:"row"}} spacing={2}>
+            <TextField select fullWidth label="省 / 直辖市" value={province} onChange={e=>pickProvince(e.target.value)}>
+              {REGION_TREE.map(node=><MenuItem key={node.value} value={node.label}>{node.label}</MenuItem>)}
+            </TextField>
+            <TextField select fullWidth label="市" value={city} disabled={!province} onChange={e=>pickCity(e.target.value)}>
+              {cityNodes.map(node=><MenuItem key={node.value} value={node.label}>{cityLabelOf(node,province)}</MenuItem>)}
+            </TextField>
+            <TextField select fullWidth label="区 / 县" value={area} disabled={!city} onChange={e=>pickArea(e.target.value)}>
+              {areaNodes.map(node=><MenuItem key={node.value} value={node.label}>{node.label}</MenuItem>)}
+            </TextField>
+          </Stack>
+          <Typography variant="caption" color={form.region?"text.disabled":"error"}>
+            {form.region?`地区将保存为：${form.region}`:(initial?.region?`原保存值「${initial.region}」无法识别，重新选择后将覆盖`:"请依次选择省市区")}
+          </Typography>
           <TextField label="详细地址" fullWidth value={form.address||""} onChange={e=>setForm({...form,address:e.target.value})}
             placeholder="街道、门牌号等"/>
           <TextField label="备注" fullWidth multiline minRows={2} value={form.remark||""} onChange={e=>setForm({...form,remark:e.target.value})}/>
