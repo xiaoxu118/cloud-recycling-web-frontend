@@ -85,7 +85,7 @@ import type {
 } from "../types";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-type Page = "orders" | "users" | "members" | "roles" | "recruits" | "cats" | "analytics" | "feedback" | "points" | "invites" | "system";
+type Page = "orders" | "users" | "members" | "roles" | "recruits" | "cats" | "analytics" | "feedback" | "points" | "goods" | "exchanges" | "invites" | "system";
 type OrderStatus = "待上门" | "进行中" | "已完成" | "已取消";
 type StaffStatus = "online" | "resting" | "resigned";
 type BusinessOrderType = "recycle" | "furniture_demolition" | "shop_demolition";
@@ -3040,31 +3040,34 @@ function PointsTypeBadge({type}:{type:PointsRecordType}){
   return <span className={`inline-flex rounded-full px-2 py-0.5 text-xs border whitespace-nowrap ${earn?"bg-indigo-50 text-indigo-700 border-indigo-200":"bg-orange-50 text-orange-700 border-orange-200"}`}>{POINTS_TYPE_LABEL[type]||type}</span>;
 }
 
-// 积分管理：流水 / 商品 / 兑换单三个 Tab
-type PointsTab="records"|"goods"|"exchanges";
-const POINTS_TABS:Array<{key:PointsTab;label:string}>=[
-  {key:"records",  label:"积分流水"},
-  {key:"goods",    label:"兑换商品"},
-  {key:"exchanges",label:"兑换单"},
-];
-
-function PointsPage({token,onError,onViewOrder,notify}:{token:string;onError:(error:unknown)=>void;onViewOrder:(id:string)=>void;notify:(message:{kind:"success"|"error";text:string})=>void}){
-  const [tab,setTab]=useState<PointsTab>("records");
+// 积分管理拆分为三个独立菜单页：积分流水（/points）、商品管理（/goods）、兑换管理（/exchanges）
+function PointsPage({token,onError,onViewOrder}:{token:string;onError:(error:unknown)=>void;onViewOrder:(id:string)=>void}){
   return <div className="p-4 md:p-6 space-y-4 md:space-y-5">
     <div>
-      <h1 className="text-lg md:text-xl font-semibold text-gray-900">积分管理</h1>
-      <p className="text-xs md:text-sm text-gray-400 mt-0.5">积分流水由订单完成后自动发放；兑换商品与兑换单构成积分商城</p>
+      <h1 className="text-lg md:text-xl font-semibold text-gray-900">积分流水</h1>
+      <p className="text-xs md:text-sm text-gray-400 mt-0.5">积分由订单完成后自动发放；手动加减请进入「人员管理 - 用户详情」</p>
     </div>
-    <div className="flex gap-1 border-b border-[#E8E8EC]">
-      {POINTS_TABS.map((item)=>
-        <button key={item.key} onClick={()=>setTab(item.key)}
-          className={`px-4 py-2 text-sm font-medium -mb-px border-b-2 transition-colors ${tab===item.key?"border-indigo-600 text-indigo-700":"border-transparent text-gray-500 hover:text-gray-700"}`}>
-          {item.label}
-        </button>)}
+    <PointsRecordsTab token={token} onError={onError} onViewOrder={onViewOrder}/>
+  </div>;
+}
+
+function PointsGoodsPage({token,onError,notify}:{token:string;onError:(error:unknown)=>void;notify:(message:{kind:"success"|"error";text:string})=>void}){
+  return <div className="p-4 md:p-6 space-y-4 md:space-y-5">
+    <div>
+      <h1 className="text-lg md:text-xl font-semibold text-gray-900">商品管理</h1>
+      <p className="text-xs md:text-sm text-gray-400 mt-0.5">积分商城的兑换商品，用户在小程序积分中心使用积分兑换</p>
     </div>
-    {tab==="records"  &&<PointsRecordsTab token={token} onError={onError} onViewOrder={onViewOrder}/>}
-    {tab==="goods"    &&<PointsGoodsTab token={token} onError={onError} notify={notify}/>}
-    {tab==="exchanges"&&<PointsExchangesTab token={token} onError={onError} notify={notify}/>}
+    <PointsGoodsTab token={token} onError={onError} notify={notify}/>
+  </div>;
+}
+
+function PointsExchangesPage({token,onError,notify}:{token:string;onError:(error:unknown)=>void;notify:(message:{kind:"success"|"error";text:string})=>void}){
+  return <div className="p-4 md:p-6 space-y-4 md:space-y-5">
+    <div>
+      <h1 className="text-lg md:text-xl font-semibold text-gray-900">兑换管理</h1>
+      <p className="text-xs md:text-sm text-gray-400 mt-0.5">用户的积分兑换记录，含核销与发货操作</p>
+    </div>
+    <PointsExchangesTab token={token} onError={onError} notify={notify}/>
   </div>;
 }
 
@@ -4063,7 +4066,11 @@ const NAV: NavGroup[] = [
   {key:"cats",      label:"品类管理", icon:Tags,         item:{id:"cats",path:"/categories",label:"品类管理",permission:"category:read"}},
   {key:"analytics", label:"分析统计", icon:BarChart2,    item:{id:"analytics",path:"/analytics",label:"分析统计",permission:"analytics:read"}},
   {key:"feedback",  label:"投诉建议", icon:MessageSquare,item:{id:"feedback",path:"/feedback",label:"投诉建议",permission:"feedback:read"}},
-  {key:"points",    label:"积分管理", icon:Coins,        item:{id:"points",path:"/points",label:"积分管理",permission:"points:read"}},
+  {key:"points",    label:"积分管理", icon:Coins,        children:[
+    {id:"points",   path:"/points",    label:"积分流水", permission:"points:read"},
+    {id:"goods",    path:"/goods",     label:"商品管理", permission:"points:read"},
+    {id:"exchanges",path:"/exchanges", label:"兑换管理", permission:"points:read"},
+  ]},
   {key:"invites",   label:"邀请管理", icon:UserPlus,     item:{id:"invites",path:"/invites",label:"邀请管理",permission:"points:read"}},
   {key:"system",    label:"系统配置", icon:Settings,     item:{id:"system",path:"/settings",label:"系统配置",permission:"setting:read"}},
 ];
@@ -4085,7 +4092,7 @@ const MEMBER_STATUS_META: Record<MemberStatus,{label:string;color:"success"|"war
 // 页面 id → 面包屑文案，二级页面带上父级名称
 const PAGE_LABEL: Record<Page,string> = {
   orders:"订单管理", users:"用户管理", members:"成员管理", roles:"角色管理", recruits:"评估员招募",
-  cats:"品类管理", analytics:"分析统计", feedback:"投诉建议", points:"积分管理", invites:"邀请管理", system:"系统配置",
+  cats:"品类管理", analytics:"分析统计", feedback:"投诉建议", points:"积分流水", goods:"商品管理", exchanges:"兑换管理", invites:"邀请管理", system:"系统配置",
 };
 
 const pageFromPath=(pathname:string):Page|null=>{
@@ -4099,6 +4106,8 @@ const pageFromPath=(pathname:string):Page|null=>{
   if(pathname==="/analytics")return "analytics";
   if(pathname==="/feedback")return "feedback";
   if(pathname==="/points")return "points";
+  if(pathname==="/goods")return "goods";
+  if(pathname==="/exchanges")return "exchanges";
   if(pathname==="/invites")return "invites";
   if(pathname==="/settings"||pathname==="/system")return "system";
   return null;
@@ -4526,7 +4535,9 @@ function MainLayout({ token,adminName,onLogout,onError,notify }:FigmaAdminProps)
           {page==="cats"      &&<CategoryTreePage nodes={categoryTree} onSave={saveCategoryNode} onDelete={deleteCategory}/>}
           {page==="analytics" &&<AnalyticsPage orders={displayOrders}/>} 
           {page==="feedback"  &&<FeedbackPage items={feedbacks} loading={loading} onRefresh={reloadFeedbacks}/>}
-          {page==="points"    &&<PointsPage token={token} onError={onError} notify={notify} onViewOrder={(id)=>navigate(`/orders/${encodeURIComponent(id)}`)}/>}
+          {page==="points"    &&<PointsPage token={token} onError={onError} onViewOrder={(id)=>navigate(`/orders/${encodeURIComponent(id)}`)}/>}
+          {page==="goods"     &&<PointsGoodsPage token={token} onError={onError} notify={notify}/>}
+          {page==="exchanges" &&<PointsExchangesPage token={token} onError={onError} notify={notify}/>}
           {page==="invites"   &&<InvitesPage token={token} onError={onError} notify={notify}/>}
           {page==="system"    &&<SystemPage items={systemSettings} onSave={saveSystemSetting} onDelete={deleteSystemSetting}/>}
         </>}
