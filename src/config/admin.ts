@@ -13,8 +13,6 @@ export interface AdminConfig {
   env: string;
   /** 云函数名 */
   functionName: string;
-  /** 扫码登录专用函数（允许匿名调用：出码 + 票据轮询） */
-  loginFunctionName: string;
 }
 
 const RUNTIME_CONFIG: Partial<AdminConfig> | undefined =
@@ -43,14 +41,7 @@ const resolveConfig = (): AdminConfig => {
     trimOrUndefined(import.meta.env.VITE_FUNCTION_NAME) ??
     "quickstartFunctions";
 
-  // 扫码登录专用函数：默认独立函数；?fn= 只影响业务函数，可用 ?loginfn= 覆盖
-  const loginFunctionName =
-    trimOrUndefined(params.get("loginfn") ?? undefined) ??
-    trimOrUndefined(RUNTIME_CONFIG?.loginFunctionName) ??
-    trimOrUndefined(import.meta.env.VITE_LOGIN_FUNCTION_NAME as string | undefined) ??
-    "adminLoginTicket";
-
-  return { env, functionName, loginFunctionName };
+  return { env, functionName };
 };
 
 export const adminConfig: AdminConfig = resolveConfig();

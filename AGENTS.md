@@ -151,27 +151,17 @@ functionName = "quickstartFunctions"
 ### 登录方式
 
 1. **小程序扫码**（默认入口，`/login` 路由，`QrLoginPanel`）
-   - 面板先 `ensureAnonymousSession()` 建立匿名会话（云函数安全规则要求 `auth != null`）
-   - 调 **`adminLoginTicket` 函数**（非主函数）的 `adminCreateLoginTicket` → 展示小程序码（`qrUrl`，票据 **5 分钟**有效）；该函数带全局出码限流（10 张/分钟，`RATE_LIMITED`）
-   - 每 2.5s 轮询同函数的 `adminCheckLoginTicket { ticket, webNonce }`；`webNonce` 只有创建票据的浏览器持有
-   - 管理员微信扫码 → 小程序隐藏页 `pages/admin-login/index` 输手机号确认（主函数 `adminConfirmLoginTicket`，校验白名单 + 绑定 openid）
+   - 调 `adminCreateLoginTicket` → 展示小程序码（`qrUrl`，票据 **5 分钟**有效）
+   - 每 2.5s 轮询 `adminCheckLoginTicket { ticket, webNonce }`；`webNonce` 只有创建票据的浏览器持有
+   - 管理员微信扫码 → 小程序隐藏页 `pages/admin-login/index` 输手机号确认（`adminConfirmLoginTicket`，云函数校验白名单 + 绑定 openid）
    - 轮询到 `confirmed` 拿 `sessionToken` → 写 `localStorage`，与短信登录共用后续流程
-   - 过期/生成失败：本地倒计时归零即标记过期，`WXACODE_CREATE_FAILED` / `RATE_LIMITED` 有专用文案，均可刷新重试或切短信 tab
-   - `adminLoginTicket` 内部通过服务端互调转发主函数，wxacode 的 openapi 授权沿用主函数配置
+   - 过期/生成失败：本地倒计时归零即标记过期，`WXACODE_CREATE_FAILED`（小程序码生成失败）有专用文案，均可刷新重试或切短信 tab
 
 2. **手机号 + 验证码**（备用入口，同页「短信登录」tab）
    - `app.auth.signInWithOtp({ phone: "+86 xxx" })` 发验证码，**60s** 倒计时
    - 用户输入 → `data.verifyOtp({ token: code })` 拿到 CloudBase `uid`
    - 调云函数 `adminPhoneLogin { phone, cloudbaseUid: uid }` 换 admin `sessionToken`
    - 写 `localStorage.admin_session_token` / `admin_name`
-
-### 云函数安全规则（重要）
-
-两个函数的 invoke 规则均为 `auth != null`（控制台 → 云函数 → 安全规则）：
-
-- `quickstartFunctions`：原规则为 `auth.loginType != 'ANONYMOUS'`，2026-09-18 为支持扫码登录放宽为 `auth != null`。管理动作的安全性不依赖此规则（sessionToken 校验在云函数内），但**回滚此规则会让扫码登录的管理调用全部 403**。
-- `adminLoginTicket`：扫码登录专用（出码限流 + 票据轮询转发），只暴露 `adminCreateLoginTicket` / `adminCheckLoginTicket` 两个动作，创建即 `auth != null`。
-- web 端在扫码 tab 先 `ensureAnonymousSession()`（cloud.ts），短信 tab 发码前 `signOutAnonymousIfExists()` 清匿名会话，避免 `signInWithOtp` 升级匿名用户污染 uid。
 
 ### Session TTL
 
